@@ -27,6 +27,23 @@ Overwatch hooks into Claude Code's event system. After every N user turns (defau
 
 The Builder then presents the review and responds to each point.
 
+### Prerequisites
+
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed and working
+- An Anthropic API key — Overwatch calls the Claude API independently for reviews, separate from Claude Code's own authentication:
+  1. Create an account at [console.anthropic.com](https://console.anthropic.com/) (this is separate from your Claude Pro/Max subscription)
+  2. Go to [Settings > API Keys](https://console.anthropic.com/settings/keys) and create a key (copy it immediately — it's only shown once)
+  3. Add to your shell profile:
+     ```bash
+     # ~/.zshrc (macOS) or ~/.bashrc (Linux)
+     export ANTHROPIC_API_KEY="sk-ant-..."
+     ```
+  4. Restart your terminal, then proceed with install
+
+  New accounts receive $5 free credit (expires in 30 days). After that, prepaid billing is required.
+
+> If your environment already provides `ANTHROPIC_AUTH_TOKEN`, Overwatch will use it automatically — no additional setup needed.
+
 ## Quick Start
 
 ```bash
