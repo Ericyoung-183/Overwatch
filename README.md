@@ -30,7 +30,7 @@ The Builder then presents the review and responds to each point.
 ## Quick Start
 
 ```bash
-git clone https://github.com/Ericyoung183/overwatch.git
+git clone https://github.com/Ericyoung-183/Overwatch.git
 cd overwatch
 ./install.sh
 # Restart Claude Code — done!
