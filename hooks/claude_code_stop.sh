@@ -68,7 +68,7 @@ os.replace(tmp, map_file)
 " 2>/dev/null
 
 # Check for pending auto-review (signal only — delivery handled by UserPromptSubmit hook)
-PENDING_FILE="${STATE_DIR}/auto_review_pending.json"
+PENDING_FILE="${STATE_DIR}/auto_review_pending_${SESSION_ID}.json"
 LOCK_FILE="${STATE_DIR}/${SESSION_ID}.lock"
 if [ -f "$PENDING_FILE" ]; then
     OUTPUT='{"continue": true, "systemMessage": "[Overwatch] Auto-review ready."}'

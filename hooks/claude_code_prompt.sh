@@ -21,9 +21,12 @@ INPUT=$(cat)
 
 mkdir -p "$STATE_DIR"
 
-# --- Phase 1: Check for pending auto-review ---
-PENDING_FILE="${STATE_DIR}/auto_review_pending.json"
-if [ -f "$PENDING_FILE" ]; then
+# Extract session_id early (needed by both phases)
+SESSION_ID=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('session_id',''))" 2>/dev/null || echo "")
+
+# --- Phase 1: Check for pending auto-review (per-session) ---
+PENDING_FILE="${STATE_DIR}/auto_review_pending_${SESSION_ID}.json"
+if [ -n "$SESSION_ID" ] && [ -f "$PENDING_FILE" ]; then
     # Copy pending info into latest_trigger.json for Builder to pick up
     OW_STATE="$STATE_DIR" OW_PENDING="$PENDING_FILE" python3 -c "
 import json, os
@@ -57,8 +60,7 @@ if [ "$MATCHED" != "true" ]; then
     exit 0
 fi
 
-# Extract session info directly from hook input
-SESSION_ID=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('session_id',''))" 2>/dev/null || echo "")
+# Extract remaining session info for manual trigger
 TRANSCRIPT=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('transcript_path',''))" 2>/dev/null || echo "")
 CWD=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cwd',''))" 2>/dev/null || echo "")
 

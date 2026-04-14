@@ -76,7 +76,7 @@ def _write_pending_marker(session_id: str, review_path: str):
     """Write pending auto-review for the UserPromptSubmit hook to deliver."""
     from config import STATE_DIR
     import json as _json
-    pending_path = os.path.join(STATE_DIR, "auto_review_pending.json")
+    pending_path = os.path.join(STATE_DIR, f"auto_review_pending_{session_id}.json")
     with open(pending_path, "w") as f:
         _json.dump({"review_path": review_path, "session_id": session_id}, f)
 

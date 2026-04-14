@@ -5,7 +5,13 @@ An independent AI reviewer that monitors your coding sessions and provides perio
 
 **Core Rule: Overwatch is an independent external system, NOT you (the Builder). You must never substitute your own review for Overwatch's output.**
 
-**When you receive an Overwatch review** (via trigger file or systemMessage):
+**AUTO-REVIEW CHECK (MANDATORY)**: Before processing EVERY user message, you MUST run:
+```bash
+cat {{OVERWATCH_DIR}}/state/latest_trigger.json 2>/dev/null
+```
+If the file exists, process the trigger (see execution flow below) BEFORE responding to the user. If it does not exist, proceed normally. This check is how auto-reviews reach you — do not skip it.
+
+**When you receive an Overwatch review** (via trigger file, systemMessage, or the auto-check above):
 - You MUST: **Present the full review text verbatim (no rewriting, omitting, or merging) -> separator line -> respond to each point with your judgment or action plan**
 - Auto-review results must also be **proactively presented and responded to** -- handle the review before continuing the user's current request
 - **Do NOT** generate your own review to substitute for Overwatch output
