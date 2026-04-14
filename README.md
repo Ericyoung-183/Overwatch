@@ -40,7 +40,7 @@ The Builder then presents the review and responds to each point.
      ```
   4. Restart your terminal, then proceed with install
 
-  New accounts receive $5 free credit (expires in 30 days). After that, prepaid billing is required.
+  New accounts may receive free credit — see [console.anthropic.com](https://console.anthropic.com/) for current pricing details.
 
 > If your environment already provides `ANTHROPIC_AUTH_TOKEN`, Overwatch will use it automatically — no additional setup needed.
 
