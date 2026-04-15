@@ -1,5 +1,29 @@
 """Overwatch configuration. Edit this file to customize behavior."""
 import os
+import re
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+_ALLOWED_INLINE_WHITESPACE = {"\t", "\n", "\r"}
+
+
+def _clean_env(value: str, default: str = "") -> str:
+    """Trim whitespace/control chars and strip ANSI escapes from env-derived values."""
+    if value is None:
+        return default
+    value = _ANSI_ESCAPE_RE.sub("", str(value))
+    value = "".join(ch for ch in value if ch >= " " or ch in _ALLOWED_INLINE_WHITESPACE)
+    return value.strip() or default
+
+
+def _clean_model_id(model_id: str) -> str:
+    """Strip bracketed suffixes like [1m] from model IDs.
+
+    Some environments (e.g. proxies) append context-window hints such as
+    ``glink/claude-opus-4-6[1m]``.  The bare ID is what the API expects.
+    """
+    return re.sub(r"\[.*?\]$", "", model_id)
+
 
 # --- Paths (auto-detected, no manual editing needed) ---
 OVERWATCH_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -16,20 +40,32 @@ MAX_SUMMARY_CHARS = 5000  # Rolling summary max characters
 MAX_TURN_CONTENT_CHARS = 4000  # Per-turn content truncation limit
 
 # --- API ---
-API_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+API_BASE_URL = _clean_env(os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com"), "https://api.anthropic.com").rstrip("/")
 # Supports multiple auth env vars for compatibility with different Claude Code distributions
-API_AUTH_TOKEN = os.environ.get("ANTHROPIC_API_KEY",
-                                os.environ.get("ANTHROPIC_AUTH_TOKEN", ""))
-REVIEW_MODEL = os.environ.get("OVERWATCH_REVIEW_MODEL",
-                              os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"))
-SUMMARY_MODEL = os.environ.get("OVERWATCH_SUMMARY_MODEL",
-                               os.environ.get("ANTHROPIC_DEFAULT_HAIKU_MODEL", "claude-haiku-4-5-20251001"))
+API_AUTH_TOKEN = _clean_env(os.environ.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_AUTH_TOKEN", "")))
+REVIEW_MODEL = _clean_model_id(_clean_env(
+    os.environ.get("OVERWATCH_REVIEW_MODEL", os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")),
+    "claude-sonnet-4-20250514",
+))
+SUMMARY_MODEL = _clean_model_id(_clean_env(
+    os.environ.get("OVERWATCH_SUMMARY_MODEL", os.environ.get("ANTHROPIC_DEFAULT_HAIKU_MODEL", "claude-haiku-4-5-20251001")),
+    "claude-haiku-4-5-20251001",
+))
 
 # --- API Limits ---
 API_TIMEOUT = 300  # seconds (extended thinking takes longer)
 MAX_REVIEW_TOKENS = 16000  # Budget for extended thinking + response
 MAX_SUMMARY_TOKENS = 1000
 MAX_SUMMARY_INPUT_CHARS = 300000  # Haiku input limit (~150K tokens with safety margin)
+API_MAX_RETRIES = int(_clean_env(os.environ.get("OVERWATCH_API_MAX_RETRIES", "3"), "3"))
+API_RETRY_BASE_DELAY = float(_clean_env(os.environ.get("OVERWATCH_API_RETRY_BASE_DELAY", "1.5"), "1.5"))
+API_RETRY_MAX_DELAY = float(_clean_env(os.environ.get("OVERWATCH_API_RETRY_MAX_DELAY", "8"), "8"))
+DEBUG_RESPONSE_PREVIEW_CHARS = int(_clean_env(os.environ.get("OVERWATCH_DEBUG_RESPONSE_PREVIEW_CHARS", "1200"), "1200"))
+
+# --- Review Validation / Failure Backoff ---
+MIN_REVIEW_CHARS = int(_clean_env(os.environ.get("OVERWATCH_MIN_REVIEW_CHARS", "80"), "80"))
+REVIEW_FAILURE_COOLDOWN_SECONDS = int(_clean_env(os.environ.get("OVERWATCH_REVIEW_FAILURE_COOLDOWN_SECONDS", "120"), "120"))
+REVIEW_MAX_COOLDOWN_SECONDS = int(_clean_env(os.environ.get("OVERWATCH_REVIEW_MAX_COOLDOWN_SECONDS", "600"), "600"))
 
 # --- Transcript Adapter ---
 ADAPTER = "claude_code"  # Which adapter to use for parsing session transcripts
@@ -37,8 +73,7 @@ ADAPTER = "claude_code"  # Which adapter to use for parsing session transcripts
 # --- Session Metadata ---
 # Claude Code stores projects under this base directory.
 # Override with OVERWATCH_CC_PROJECTS env var if your installation differs.
-CC_PROJECTS_BASE = os.environ.get("OVERWATCH_CC_PROJECTS",
-                                  os.path.expanduser("~/.claude/projects"))
+CC_PROJECTS_BASE = os.environ.get("OVERWATCH_CC_PROJECTS", os.path.expanduser("~/.claude/projects"))
 # Fallback paths to try if primary doesn't exist.
 # Set OVERWATCH_CC_PROJECTS_FALLBACK (colon-separated) for additional search paths.
 CC_PROJECTS_FALLBACKS = [
