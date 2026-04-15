@@ -29,7 +29,9 @@ SESSION_ID=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin)
 
 # --- Phase 1: Check for pending auto-review (per-session) ---
 PENDING_FILE="${STATE_DIR}/auto_review_pending_${SESSION_ID}.json"
+echo "[Overwatch Prompt Hook $(date +%H:%M:%S)] Hook fired (session=$SESSION_ID, pending_exists=$([ -f "$PENDING_FILE" ] && echo 'yes' || echo 'no'))" >> "$LOG_FILE" 2>&1
 if [ -n "$SESSION_ID" ] && [ -f "$PENDING_FILE" ]; then
+    echo "[Overwatch Prompt Hook $(date +%H:%M:%S)] Auto-review pending found, injecting via additionalContext" >> "$LOG_FILE" 2>&1
     # Primary: inject review content via additionalContext (reaches AI context)
     # Fallback: write trigger file for environments without additionalContext support
     OUTPUT=$(OW_STATE="$STATE_DIR" OW_PENDING="$PENDING_FILE" python3 -c "
