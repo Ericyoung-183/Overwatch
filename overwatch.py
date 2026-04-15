@@ -5,7 +5,8 @@ import fcntl
 import json
 import os
 import sys
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 
 # Ensure sibling modules are importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -15,6 +16,9 @@ from config import (
     REVIEWS_DIR,
     CURRENT_REVIEW_LINK,
     ADAPTER,
+    MIN_REVIEW_CHARS,
+    REVIEW_FAILURE_COOLDOWN_SECONDS,
+    REVIEW_MAX_COOLDOWN_SECONDS,
 )
 from api_client import call_claude
 from adapters import get_adapter
@@ -32,22 +36,18 @@ def write_review(session_id: str, review_text: str, review_number: int, project_
     header = f"<!-- Overwatch Review #{review_number} | {timestamp} | session: {session_id} | project: {project_cwd} -->\n<!-- META_END -->\n\n"
     full_text = header + review_text
 
-    # Write latest.md
     latest_path = os.path.join(session_dir, "latest.md")
     with open(latest_path, "w", encoding="utf-8") as f:
         f.write(full_text)
 
-    # Archive
     archive_path = os.path.join(history_dir, f"review_{review_number:03d}.md")
     with open(archive_path, "w", encoding="utf-8") as f:
         f.write(full_text)
 
-    # Update global _current.md symlink
     if os.path.islink(CURRENT_REVIEW_LINK) or os.path.exists(CURRENT_REVIEW_LINK):
         os.remove(CURRENT_REVIEW_LINK)
     os.symlink(latest_path, CURRENT_REVIEW_LINK)
 
-    # Update per-project symlink
     if project_cwd:
         project_name = os.path.basename(project_cwd.rstrip("/"))
         project_link = os.path.join(REVIEWS_DIR, f"_current_{project_name}.md")
@@ -79,25 +79,6 @@ def _write_pending_marker(session_id: str, review_path: str):
     pending_path = os.path.join(STATE_DIR, f"auto_review_pending_{session_id}.json")
     with open(pending_path, "w") as f:
         _json.dump({"review_path": review_path, "session_id": session_id}, f)
-
-
-def run(session_id: str, transcript_path: str, force: bool = False, project_cwd: str = ""):
-    """Overwatch main flow."""
-    lock = _acquire_lock(session_id)
-    if lock is None:
-        log("Another Overwatch instance is running, skipping.")
-        return
-
-    try:
-        _run_inner(session_id, transcript_path, force, project_cwd)
-    finally:
-        fcntl.flock(lock, fcntl.LOCK_UN)
-        lock_path = lock.name
-        lock.close()
-        try:
-            os.remove(lock_path)
-        except OSError:
-            pass
 
 
 def _read_last_review(session_id: str) -> str:
@@ -134,71 +115,181 @@ def _read_project_description(project_cwd: str) -> str:
         return ""
 
 
-def _run_inner(session_id: str, transcript_path: str, force: bool = False, project_cwd: str = ""):
-    """Core review logic."""
-    # 0. Verify API key is configured
-    from config import API_AUTH_TOKEN
-    if not API_AUTH_TOKEN:
-        log("ANTHROPIC_API_KEY not set. Please set this environment variable.")
+def _now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _compute_cooldown_seconds(consecutive_failures: int) -> int:
+    base = max(1, REVIEW_FAILURE_COOLDOWN_SECONDS)
+    cooldown = base * (2 ** max(0, consecutive_failures - 1))
+    return min(cooldown, max(base, REVIEW_MAX_COOLDOWN_SECONDS))
+
+
+def _is_in_cooldown(state: dict) -> bool:
+    cooldown_until = state.get("cooldown_until", "")
+    if not cooldown_until:
+        return False
+    try:
+        return datetime.now() < datetime.fromisoformat(cooldown_until)
+    except ValueError:
+        return False
+
+
+def _mark_attempt_started(state: dict) -> dict:
+    return {
+        **state,
+        "last_attempt_at": _now_iso(),
+    }
+
+
+def _mark_review_success(state: dict) -> dict:
+    return {
+        **state,
+        "last_review_status": "success",
+        "last_error": "",
+        "consecutive_failures": 0,
+        "cooldown_until": "",
+        "last_success_at": _now_iso(),
+    }
+
+
+def _mark_review_failure(state: dict, error_message: str) -> dict:
+    failures = int(state.get("consecutive_failures", 0)) + 1
+    cooldown_seconds = _compute_cooldown_seconds(failures)
+    cooldown_until = (datetime.now() + timedelta(seconds=cooldown_seconds)).isoformat(timespec="seconds")
+    return {
+        **state,
+        "last_review_status": "failed",
+        "last_error": error_message[:1000],
+        "consecutive_failures": failures,
+        "cooldown_until": cooldown_until,
+    }
+
+
+def _is_valid_review_text(review_text: str) -> bool:
+    if not review_text or not review_text.strip():
+        return False
+    text = review_text.strip()
+    if text.lower() in {"null", "none", "{}", "[]"}:
+        return False
+    if text.startswith("[Overwatch"):
+        return False
+    return len(text) >= MIN_REVIEW_CHARS
+
+
+def run(session_id: str, transcript_path: str, force: bool = False, project_cwd: str = ""):
+    """Overwatch main flow."""
+    lock = _acquire_lock(session_id)
+    if lock is None:
+        log("run_skipped_lock", session_id=session_id, reason="another_instance_running")
         return
 
-    # 1. Load state
+    try:
+        _run_inner(session_id, transcript_path, force, project_cwd)
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        lock_path = lock.name
+        lock.close()
+        try:
+            os.remove(lock_path)
+        except OSError:
+            pass
+
+
+def _run_inner(session_id: str, transcript_path: str, force: bool = False, project_cwd: str = ""):
+    """Core review logic."""
+    from config import API_AUTH_TOKEN
+    if not API_AUTH_TOKEN:
+        log("config_error", session_id=session_id, error="ANTHROPIC_API_KEY not set")
+        return
+
     state = load_state(session_id)
 
-    # 2. Parse transcript (always from beginning for full context)
+    if not force and _is_in_cooldown(state):
+        log(
+            "run_skipped_cooldown",
+            session_id=session_id,
+            cooldown_until=state.get("cooldown_until", ""),
+            consecutive_failures=state.get("consecutive_failures", 0),
+        )
+        return
+
     parse = get_adapter(ADAPTER)
     turns = parse(transcript_path, offset=0)
 
     if not turns:
-        log("No turns found in transcript, skipping.")
+        log("run_skipped_empty_transcript", session_id=session_id)
         return
 
-    # 3. Check for new content
     current_turn_count = len([t for t in turns if t.role == "user"])
     last_reviewed = state.get("last_reviewed_turn", 0)
 
     if not force and current_turn_count <= last_reviewed:
-        log(f"No new turns since last review (current={current_turn_count}, last={last_reviewed})")
+        log("run_skipped_no_new_turns", session_id=session_id, current=current_turn_count, last=last_reviewed)
         return
 
-    # 4. Read incremental review inputs
     last_review = _read_last_review(session_id)
     project_description = _read_project_description(project_cwd)
 
-    # 5. Build context
     context_text, updated_state = build_review_context(turns, state, project_description)
+    updated_state = _mark_attempt_started(updated_state)
     review_number = updated_state["review_count"]
+    save_state(session_id, updated_state)
 
-    # 6. Assemble prompt
     system_prompt, user_message = build_review_prompt(context_text, review_number, last_review)
 
-    # 7. Call API
-    log(f"Calling Claude API for review #{review_number} (model={REVIEW_MODEL})...")
+    started = time.time()
+    log("api_call_start", session_id=session_id, review=review_number, model=REVIEW_MODEL)
     review_text = call_claude(system_prompt, user_message)
+    latency_ms = int((time.time() - started) * 1000)
 
-    # 7.5. Check for API errors
     if review_text.startswith("[Overwatch") and ("Error" in review_text or "API Error" in review_text):
-        log(f"API call failed: {review_text[:200]}")
+        failed_state = _mark_review_failure(updated_state, review_text)
+        save_state(session_id, failed_state)
+        log(
+            "api_call_failed",
+            session_id=session_id,
+            review=review_number,
+            latency_ms=latency_ms,
+            error=review_text[:300],
+            cooldown_until=failed_state.get("cooldown_until", ""),
+        )
         return
 
-    # 8. Write review
-    review_path = write_review(session_id, review_text, review_number, project_cwd)
-    log(f"Review written to: {review_path}")
+    if not _is_valid_review_text(review_text):
+        error = f"Invalid review output (len={len(review_text.strip()) if review_text else 0})"
+        failed_state = _mark_review_failure(updated_state, error)
+        save_state(session_id, failed_state)
+        log(
+            "review_validation_failed",
+            session_id=session_id,
+            review=review_number,
+            latency_ms=latency_ms,
+            error=error,
+            cooldown_until=failed_state.get("cooldown_until", ""),
+        )
+        return
 
-    # 8.5. Write pending marker for auto-trigger (manual --force is injected by hook directly)
+    review_path = write_review(session_id, review_text, review_number, project_cwd)
+    log("review_written", session_id=session_id, review=review_number, latency_ms=latency_ms, path=review_path)
+
     if not force:
         _write_pending_marker(session_id, review_path)
-        log("Pending review marker written for next-turn display.")
+        log("pending_marker_written", session_id=session_id, review=review_number)
 
-    # 9. Save state
-    save_state(session_id, updated_state)
-    log(f"State saved. Next review after turn {updated_state['last_reviewed_turn']}.")
+    success_state = _mark_review_success(updated_state)
+    save_state(session_id, success_state)
+    log("state_saved", session_id=session_id, review=review_number, next_after_turn=success_state['last_reviewed_turn'])
 
 
-def log(msg: str):
-    """Log to stderr (doesn't interfere with hook stdout)."""
+def log(event: str, **fields):
+    """Structured stderr logger (doesn't interfere with hook stdout)."""
     timestamp = datetime.now().strftime("%H:%M:%S")
-    print(f"[Overwatch {timestamp}] {msg}", file=sys.stderr)
+    extras = " ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in fields.items())
+    msg = f"[Overwatch {timestamp}] event={event}"
+    if extras:
+        msg += " " + extras
+    print(msg, file=sys.stderr)
 
 
 def main():
@@ -210,7 +301,7 @@ def main():
     args = parser.parse_args()
 
     if not os.path.exists(args.transcript):
-        log(f"Transcript not found: {args.transcript}")
+        log("transcript_not_found", transcript=args.transcript)
         sys.exit(1)
 
     run(args.session_id, args.transcript, args.force, args.cwd)
