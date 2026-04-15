@@ -10,6 +10,7 @@ set -euo pipefail
 
 OVERWATCH_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 STATE_DIR="${OVERWATCH_DIR}/state"
+LOG_FILE="${OVERWATCH_DIR}/overwatch.log"
 
 # Default output
 OUTPUT='{"continue": true}'
@@ -83,6 +84,8 @@ print('true' if prompt in [k.lower() for k in TRIGGER_KEYWORDS] else 'false')
 if [ "$MATCHED" != "true" ]; then
     exit 0
 fi
+
+echo "[Overwatch Prompt Hook $(date +%H:%M:%S)] Manual trigger matched (session=$SESSION_ID, prompt='${USER_PROMPT:0:50}')" >> "$LOG_FILE" 2>&1
 
 # Extract remaining session info for manual trigger
 TRANSCRIPT=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('transcript_path',''))" 2>/dev/null || echo "")

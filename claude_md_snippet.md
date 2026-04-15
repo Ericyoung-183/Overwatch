@@ -26,11 +26,19 @@ Then read the review: `bash {{OVERWATCH_DIR}}/hooks/find_review.sh "$(pwd)"` to 
 rm -f {{OVERWATCH_DIR}}/state/latest_trigger.json
 ```
 
-**Fallback** (if `[Overwatch]` appears in status but no review content in your context, check the trigger file):
+**Fallback** (if user triggers a review but no `[Overwatch]` content appears in your context):
+
+Step 1 — Check trigger file:
 ```bash
 cat {{OVERWATCH_DIR}}/state/latest_trigger.json 2>/dev/null
 ```
 If it exists: `type: "auto_review"` → read `review_path` and present; `type: "manual_trigger"` → run the review command above with `session_id` and `transcript_path` from the file.
 
-**Important**: Always use `session_id` and `transcript_path` from the delivered context or trigger file. Do not call `find_session.sh` independently -- multiple concurrent sessions may exist.
+Step 2 — If no trigger file, try `find_session.sh` (last resort):
+```bash
+read SID TRANSCRIPT <<< $(bash {{OVERWATCH_DIR}}/hooks/find_session.sh)
+```
+If both `SID` and `TRANSCRIPT` are non-empty, run the review command with those values. If empty, the session is too new — tell the user: "Overwatch needs a few turns of conversation before it can review. Continue working and try again shortly."
+
+**Important**: Prefer `session_id` and `transcript_path` from `additionalContext` or trigger file over `find_session.sh` — multiple concurrent sessions may exist.
 <!-- OVERWATCH:END -->
