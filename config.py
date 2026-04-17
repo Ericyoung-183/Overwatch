@@ -40,9 +40,14 @@ MAX_SUMMARY_CHARS = 5000  # Rolling summary max characters
 MAX_TURN_CONTENT_CHARS = 4000  # Per-turn content truncation limit
 
 # --- API ---
-API_BASE_URL = _clean_env(os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com"), "https://api.anthropic.com").rstrip("/")
-# Supports multiple auth env vars for compatibility with different Claude Code distributions
-API_AUTH_TOKEN = _clean_env(os.environ.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_AUTH_TOKEN", "")))
+API_BASE_URL = _clean_env(
+    os.environ.get("OVERWATCH_BASE_URL", os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")),
+    "https://api.anthropic.com",
+).rstrip("/")
+# Supports multiple auth env vars: OVERWATCH_API_KEY (dedicated) > ANTHROPIC_API_KEY > ANTHROPIC_AUTH_TOKEN
+API_AUTH_TOKEN = _clean_env(
+    os.environ.get("OVERWATCH_API_KEY", os.environ.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_AUTH_TOKEN", "")))
+)
 # API format: "anthropic" (default) or "openai" (for GLM, DeepSeek, Qwen, etc.)
 # Auto-detects if not set: uses "openai" when base URL is not api.anthropic.com and not localhost.
 _raw_api_format = _clean_env(os.environ.get("OVERWATCH_API_FORMAT", ""), "").lower()
