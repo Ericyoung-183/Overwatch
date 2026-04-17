@@ -184,7 +184,9 @@ def call_claude(system_prompt: str, user_message: str, model: str = None,
             "system": system_prompt,
             "messages": [{"role": "user", "content": user_message}],
         }
-        if thinking and max_tokens > 4000:
+        # Extended thinking only works with Claude models
+        is_claude = "claude" in model.lower()
+        if thinking and is_claude and max_tokens > 4000:
             payload["thinking"] = {
                 "type": "enabled",
                 "budget_tokens": max_tokens - 4000,
