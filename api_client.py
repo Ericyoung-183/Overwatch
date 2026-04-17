@@ -1,4 +1,5 @@
-"""Claude API client. Zero external dependencies — uses only urllib."""
+"""API client for Overwatch. Supports Anthropic and OpenAI-compatible formats.
+Zero external dependencies — uses only urllib."""
 import json
 import random
 import time
@@ -9,6 +10,7 @@ from http.client import RemoteDisconnected
 from config import (
     API_BASE_URL,
     API_AUTH_TOKEN,
+    API_FORMAT,
     API_TIMEOUT,
     REVIEW_MODEL,
     MAX_REVIEW_TOKENS,
@@ -50,7 +52,17 @@ def _response_preview(payload) -> str:
 
 
 def _extract_response_text(result: dict) -> str:
-    """Best-effort extraction for Anthropic-compatible providers."""
+    """Best-effort extraction for both Anthropic and OpenAI-compatible responses."""
+    # --- OpenAI format: choices[].message.content ---
+    choices = result.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0]
+        if isinstance(first, dict):
+            msg = first.get("message", {})
+            if isinstance(msg, dict) and isinstance(msg.get("content"), str) and msg["content"].strip():
+                return msg["content"].strip()
+
+    # --- Anthropic format: content[].text ---
     content = result.get("content")
     text_parts = []
 
@@ -69,6 +81,7 @@ def _extract_response_text(result: dict) -> str:
     if text_parts:
         return "\n".join(part for part in text_parts if part).strip()
 
+    # --- Fallbacks ---
     if isinstance(result.get("output_text"), str) and result["output_text"].strip():
         return result["output_text"].strip()
     if isinstance(result.get("completion"), str) and result["completion"].strip():
@@ -99,9 +112,9 @@ def _sleep_before_retry(attempt: int):
     time.sleep(delay)
 
 
-def _post_messages(payload: dict, headers: dict) -> dict:
+def _post_messages(payload: dict, headers: dict, api_format: str = "anthropic") -> dict:
     base_url = API_BASE_URL.rstrip("/")
-    url = f"{base_url}/v1/messages"
+    url = f"{base_url}/v1/chat/completions" if api_format == "openai" else f"{base_url}/v1/messages"
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
 
@@ -145,35 +158,50 @@ def _post_messages(payload: dict, headers: dict) -> dict:
 
 def call_claude(system_prompt: str, user_message: str, model: str = None,
                 max_tokens: int = None, thinking: bool = True) -> str:
-    """Call Claude API (Messages API format) with retry and compatibility parsing."""
+    """Call LLM API with retry. Supports Anthropic and OpenAI-compatible formats."""
     model = model or REVIEW_MODEL
     max_tokens = max_tokens or MAX_REVIEW_TOKENS
+    api_format = API_FORMAT
 
-    payload = {
-        "model": model,
-        "max_tokens": max_tokens,
-        "system": system_prompt,
-        "messages": [{"role": "user", "content": user_message}],
-    }
-    if thinking and max_tokens > 4000:
-        payload["thinking"] = {
-            "type": "enabled",
-            "budget_tokens": max_tokens - 4000,
+    if api_format == "openai":
+        payload = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
         }
-
-    headers = {
-        "Content-Type": "application/json",
-        "anthropic-version": "2023-06-01",
-    }
-    if API_AUTH_TOKEN:
-        headers["x-api-key"] = API_AUTH_TOKEN
+        headers = {
+            "Content-Type": "application/json",
+        }
+        if API_AUTH_TOKEN:
+            headers["Authorization"] = f"Bearer {API_AUTH_TOKEN}"
+    else:
+        payload = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_message}],
+        }
+        if thinking and max_tokens > 4000:
+            payload["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": max_tokens - 4000,
+            }
+        headers = {
+            "Content-Type": "application/json",
+            "anthropic-version": "2023-06-01",
+        }
+        if API_AUTH_TOKEN:
+            headers["x-api-key"] = API_AUTH_TOKEN
 
     last_error = None
     total_attempts = max(1, API_MAX_RETRIES)
 
     for attempt in range(1, total_attempts + 1):
         try:
-            result = _post_messages(payload, headers)
+            result = _post_messages(payload, headers, api_format)
             text = _extract_response_text(result)
             if text:
                 return text

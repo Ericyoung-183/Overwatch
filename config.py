@@ -43,6 +43,15 @@ MAX_TURN_CONTENT_CHARS = 4000  # Per-turn content truncation limit
 API_BASE_URL = _clean_env(os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com"), "https://api.anthropic.com").rstrip("/")
 # Supports multiple auth env vars for compatibility with different Claude Code distributions
 API_AUTH_TOKEN = _clean_env(os.environ.get("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_AUTH_TOKEN", "")))
+# API format: "anthropic" (default) or "openai" (for GLM, DeepSeek, Qwen, etc.)
+# Auto-detects if not set: uses "openai" when base URL is not api.anthropic.com and not localhost.
+_raw_api_format = _clean_env(os.environ.get("OVERWATCH_API_FORMAT", ""), "").lower()
+if _raw_api_format in ("anthropic", "openai"):
+    API_FORMAT = _raw_api_format
+else:
+    # Auto-detect: localhost/127.0.0.1 → anthropic (likely proxy), api.anthropic.com → anthropic
+    _is_anthropic = any(h in API_BASE_URL for h in ("anthropic.com", "localhost", "127.0.0.1"))
+    API_FORMAT = "anthropic" if _is_anthropic else "openai"
 REVIEW_MODEL = _clean_model_id(_clean_env(
     os.environ.get("OVERWATCH_REVIEW_MODEL", os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")),
     "claude-sonnet-4-20250514",
