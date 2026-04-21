@@ -137,6 +137,14 @@ def should_trigger_early(transcript_path: str, last_n_lines: int = 30) -> bool:
 
     text_block = " ".join(lines).lower()
 
+    # Decode \uXXXX escapes (some transcript encoders may use ASCII-escaped Chinese)
+    if "\\u" in text_block:
+        text_block = re.sub(
+            r"\\u([0-9a-f]{4})",
+            lambda m: chr(int(m.group(1), 16)),
+            text_block,
+        )
+
     # Signal 1: git commit happened
     if "git commit" in text_block or "git push" in text_block:
         return True
