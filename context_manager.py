@@ -175,7 +175,8 @@ def build_review_context(
 
     sections = []
 
-    if project_context:
+    # Skip Project Background when User Context is present (it already contains L3)
+    if project_context and not user_context:
         sections.append(f"## Project Background\n{project_context}")
 
     if running_summary:

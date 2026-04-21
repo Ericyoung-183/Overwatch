@@ -211,7 +211,11 @@ def _read_user_context(project_cwd: str) -> str:
     if not sections:
         return ""
 
-    return "## User Context\n\n" + "\n\n---\n\n".join(sections)
+    from config import MAX_USER_CONTEXT_CHARS
+    result = "## User Context\n\n" + "\n\n---\n\n".join(sections)
+    if len(result) > MAX_USER_CONTEXT_CHARS:
+        result = result[:MAX_USER_CONTEXT_CHARS] + "\n\n... [user context truncated]"
+    return result
 
 
 def should_trigger_early(transcript_path: str, last_n_lines: int = 30) -> bool:
@@ -430,11 +434,10 @@ def _run_inner(session_id: str, transcript_path: str, force: bool = False, proje
         return
 
     last_review = _read_last_review(session_id)
-    project_description = _read_project_description(project_cwd)
     git_context = _get_git_context(project_cwd)
     user_context = _read_user_context(project_cwd)
 
-    context_text, updated_state = build_review_context(turns, state, project_description, git_context, user_context)
+    context_text, updated_state = build_review_context(turns, state, "", git_context, user_context)
     updated_state = _mark_attempt_started(updated_state)
     review_number = updated_state["review_count"]
     save_state(session_id, updated_state)
