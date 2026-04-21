@@ -32,7 +32,10 @@ STATE_DIR = os.path.join(OVERWATCH_DIR, "state")
 CURRENT_REVIEW_LINK = os.path.join(REVIEWS_DIR, "_current.md")
 
 # --- Throttle ---
-TURN_THRESHOLD = 10  # Auto-trigger review every N user turns
+TURN_THRESHOLD = 10  # Baseline auto-trigger interval (used as max when smart trigger is off)
+SMART_TRIGGER = True  # Enable content-based early triggering
+TURN_THRESHOLD_MIN = 5   # Minimum turns between reviews (floor, even with smart trigger)
+TURN_THRESHOLD_MAX = 15  # Maximum turns without review (hard ceiling)
 
 # --- Context Window ---
 RECENT_WINDOW_SIZE = 20  # Keep last N user-assistant exchanges verbatim

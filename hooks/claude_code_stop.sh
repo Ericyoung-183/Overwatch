@@ -10,7 +10,12 @@ set -euo pipefail
 OVERWATCH_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OVERWATCH_PY="${OVERWATCH_DIR}/overwatch.py"
 STATE_DIR="${OVERWATCH_DIR}/state"
-TURN_THRESHOLD=$(python3 -c "import sys; sys.path.insert(0,'$OVERWATCH_DIR'); from config import TURN_THRESHOLD; print(TURN_THRESHOLD)" 2>/dev/null || echo "10")
+# Read throttle config
+read TURN_THRESHOLD SMART_TRIGGER TURN_MIN TURN_MAX <<< $(python3 -c "
+import sys; sys.path.insert(0,'$OVERWATCH_DIR')
+from config import TURN_THRESHOLD, SMART_TRIGGER, TURN_THRESHOLD_MIN, TURN_THRESHOLD_MAX
+print(TURN_THRESHOLD, SMART_TRIGGER, TURN_THRESHOLD_MIN, TURN_THRESHOLD_MAX)
+" 2>/dev/null || echo "10 False 5 15")
 LOG_FILE="${OVERWATCH_DIR}/overwatch.log"
 
 # Default output
@@ -120,7 +125,37 @@ print(len([t for t in turns if t.role == 'user']))
 " 2>/dev/null || echo "0")
 
 DIFF=$((CURRENT_TURNS - LAST_REVIEWED))
-if [ "$DIFF" -lt "$TURN_THRESHOLD" ]; then
+
+# Smart trigger: 3-tier decision
+# Below MIN → never trigger
+# Above MAX → always trigger
+# Between MIN and MAX → trigger if content signals detected, else wait for baseline threshold
+EFFECTIVE_MAX=${TURN_MAX:-15}
+EFFECTIVE_MIN=${TURN_MIN:-5}
+
+if [ "$DIFF" -lt "$EFFECTIVE_MIN" ]; then
+    REMAINING=$((EFFECTIVE_MIN - DIFF))
+    OUTPUT="{\"continue\": true, \"systemMessage\": \"[Overwatch] ${REVIEW_COUNT} reviews | ${REMAINING}+ turns until next | Type 'overwatch' or '第二意见'\"}"
+    exit 0
+elif [ "$DIFF" -ge "$EFFECTIVE_MAX" ]; then
+    # Hard ceiling — force trigger
+    :
+elif [ "$SMART_TRIGGER" = "True" ]; then
+    # Between MIN and MAX — check content signals
+    SHOULD_TRIGGER=$(OW_TRANSCRIPT="$TRANSCRIPT_PATH" python3 -c "
+import sys; sys.path.insert(0, '$OVERWATCH_DIR')
+from overwatch import should_trigger_early
+import os
+print('yes' if should_trigger_early(os.environ['OW_TRANSCRIPT']) else 'no')
+" 2>/dev/null || echo "no")
+    if [ "$SHOULD_TRIGGER" = "no" ]; then
+        REMAINING=$((EFFECTIVE_MAX - DIFF))
+        OUTPUT="{\"continue\": true, \"systemMessage\": \"[Overwatch] ${REVIEW_COUNT} reviews | ${REMAINING} turns until next | Type 'overwatch' or '第二意见'\"}"
+        exit 0
+    fi
+    echo "[Overwatch Hook $(date +%H:%M:%S)] Smart trigger fired (session=$SESSION_ID, diff=$DIFF)" >> "$LOG_FILE" 2>&1
+elif [ "$DIFF" -lt "$TURN_THRESHOLD" ]; then
+    # Smart trigger off — use baseline threshold
     REMAINING=$((TURN_THRESHOLD - DIFF))
     OUTPUT="{\"continue\": true, \"systemMessage\": \"[Overwatch] ${REVIEW_COUNT} reviews | ${REMAINING} turns until next | Type 'overwatch' or '第二意见'\"}"
     exit 0

@@ -115,6 +115,50 @@ def _read_project_description(project_cwd: str) -> str:
         return ""
 
 
+def should_trigger_early(transcript_path: str, last_n_lines: int = 30) -> bool:
+    """Check if recent transcript content warrants an early review trigger.
+
+    Scans the last N lines for signals like git commits, user corrections,
+    design decisions, or high file-change density. Called from the Stop hook.
+    """
+    import re
+
+    try:
+        # Read tail of transcript efficiently
+        with open(transcript_path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            # Read last ~50KB (plenty for 30 lines)
+            f.seek(max(0, size - 50000))
+            tail = f.read().decode("utf-8", errors="replace")
+        lines = tail.strip().split("\n")[-last_n_lines:]
+    except Exception:
+        return False
+
+    text_block = " ".join(lines).lower()
+
+    # Signal 1: git commit happened
+    if "git commit" in text_block or "git push" in text_block:
+        return True
+
+    # Signal 2: user requesting review/check
+    review_keywords = ["检查", "review", "确认一下", "看看对不对", "完整检查", "check"]
+    if any(kw in text_block for kw in review_keywords):
+        return True
+
+    # Signal 3: user correction / frustration (re-do signals)
+    correction_keywords = ["不对", "错了", "wrong", "再想", "重新", "再来", "搞错"]
+    if any(kw in text_block for kw in correction_keywords):
+        return True
+
+    # Signal 4: high file-write density (many tool_use with write/edit)
+    write_count = text_block.count('"tool_name"') + text_block.count('"type":"tool_use"')
+    if write_count >= 8:
+        return True
+
+    return False
+
+
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
