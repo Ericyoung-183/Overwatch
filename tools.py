@@ -96,6 +96,16 @@ def _run_cmd(cmd: list[str], cwd: str, timeout: int = 10) -> str:
         return f"(error: {e})"
 
 
+def _safe_path(project_cwd: str, relative_path: str) -> str:
+    """Resolve a relative path and verify it stays within the project directory.
+    Returns the resolved absolute path, or raises ValueError if it escapes."""
+    resolved = os.path.realpath(os.path.join(project_cwd, relative_path))
+    project_root = os.path.realpath(project_cwd)
+    if not resolved.startswith(project_root + os.sep) and resolved != project_root:
+        raise ValueError(f"path escapes project directory: {relative_path}")
+    return resolved
+
+
 def execute_tool(name: str, input_data: dict, project_cwd: str) -> str:
     """Execute a tool and return the result as a string."""
     if not project_cwd or not os.path.isdir(project_cwd):
@@ -107,8 +117,11 @@ def execute_tool(name: str, input_data: dict, project_cwd: str) -> str:
         include = input_data.get("include", "")
         if not pattern:
             return "(error: pattern is required)"
+        try:
+            search_path = _safe_path(project_cwd, path) if path else project_cwd
+        except ValueError as e:
+            return f"(error: {e})"
         cmd = ["grep", "-rn", "--include", include, pattern] if include else ["grep", "-rn", pattern]
-        search_path = os.path.join(project_cwd, path) if path else project_cwd
         cmd.append(search_path)
         return _truncate(_run_cmd(cmd, project_cwd))
 
@@ -116,7 +129,10 @@ def execute_tool(name: str, input_data: dict, project_cwd: str) -> str:
         file_path = input_data.get("path", "")
         if not file_path:
             return "(error: path is required)"
-        full_path = os.path.join(project_cwd, file_path)
+        try:
+            full_path = _safe_path(project_cwd, file_path)
+        except ValueError as e:
+            return f"(error: {e})"
         if not os.path.isfile(full_path):
             return f"(file not found: {file_path})"
         try:
@@ -133,6 +149,11 @@ def execute_tool(name: str, input_data: dict, project_cwd: str) -> str:
     elif name == "git_diff":
         ref = input_data.get("ref", "HEAD")
         path = input_data.get("path", "")
+        if path:
+            try:
+                _safe_path(project_cwd, path)
+            except ValueError as e:
+                return f"(error: {e})"
         cmd = ["git", "diff", ref]
         if path:
             cmd += ["--", path]
@@ -148,7 +169,10 @@ def execute_tool(name: str, input_data: dict, project_cwd: str) -> str:
 
     elif name == "list_files":
         path = input_data.get("path", "")
-        target = os.path.join(project_cwd, path) if path else project_cwd
+        try:
+            target = _safe_path(project_cwd, path) if path else project_cwd
+        except ValueError as e:
+            return f"(error: {e})"
         if not os.path.isdir(target):
             return f"(directory not found: {path})"
         cmd = ["ls", "-la", target]

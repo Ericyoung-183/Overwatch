@@ -277,12 +277,19 @@ def call_claude_with_tools(
     for round_num in range(max_tool_rounds + 1):
         payload = {**payload_base, "messages": messages}
 
-        try:
-            result = _post_messages(payload, headers, "anthropic")
-        except OverwatchAPIError as e:
-            return e.as_text()
-        except Exception as e:
-            return f"[Overwatch Error: {type(e).__name__}] {str(e)}"
+        # Retry logic (same as call_claude)
+        result = None
+        for attempt in range(1, max(1, API_MAX_RETRIES) + 1):
+            try:
+                result = _post_messages(payload, headers, "anthropic")
+                break
+            except Exception as exc:
+                if attempt < API_MAX_RETRIES and _should_retry_error(exc):
+                    _sleep_before_retry(attempt)
+                    continue
+                if isinstance(exc, OverwatchAPIError):
+                    return exc.as_text()
+                return f"[Overwatch Error: {type(exc).__name__}] {str(exc)}"
 
         # Extract content blocks
         content = result.get("content", [])

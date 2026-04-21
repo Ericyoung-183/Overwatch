@@ -100,21 +100,6 @@ def _read_last_review(session_id: str) -> str:
         return ""
 
 
-def _read_project_description(project_cwd: str) -> str:
-    """Extract project description from CLAUDE.md for context."""
-    if not project_cwd:
-        return ""
-    claude_md = os.path.join(project_cwd, ".claude", "CLAUDE.md")
-    if not os.path.exists(claude_md):
-        return ""
-    try:
-        with open(claude_md, "r", encoding="utf-8") as f:
-            content = f.read()
-        return content[:500].strip()
-    except Exception:
-        return ""
-
-
 def _read_user_context(project_cwd: str) -> str:
     """Auto-discover and read user's memory files for personalized review context.
 
