@@ -148,6 +148,7 @@ def build_review_context(
     turns: list[Turn],
     state: dict,
     project_description: str = "",
+    git_context: str = "",
 ) -> tuple[str, dict]:
     """Build the complete context for the review API call.
 
@@ -178,6 +179,9 @@ def build_review_context(
 
     if running_summary:
         sections.append(f"## Earlier Conversation Summary\n{running_summary}")
+
+    if git_context:
+        sections.append(git_context)
 
     sections.append(f"## Recent Conversation (verbatim)\n{recent_text}")
 

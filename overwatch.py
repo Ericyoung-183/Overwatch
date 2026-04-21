@@ -119,6 +119,56 @@ def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def _get_git_context(project_cwd: str) -> str:
+    """Gather git diff and recent commits for review context. Returns empty string if not a git repo."""
+    import subprocess
+    from config import MAX_GIT_DIFF_CHARS
+
+    if not project_cwd or not os.path.isdir(project_cwd):
+        return ""
+
+    def _run(cmd):
+        try:
+            result = subprocess.run(
+                cmd, cwd=project_cwd, capture_output=True, text=True, timeout=10
+            )
+            return result.stdout.strip() if result.returncode == 0 else ""
+        except Exception:
+            return ""
+
+    # Check if it's a git repo
+    if not _run(["git", "rev-parse", "--git-dir"]):
+        return ""
+
+    parts = []
+
+    # Recent commits (last 5)
+    log_output = _run(["git", "log", "--oneline", "-5"])
+    if log_output:
+        parts.append(f"### Recent Commits\n```\n{log_output}\n```")
+
+    # Uncommitted changes
+    diff_output = _run(["git", "diff", "HEAD"])
+    if not diff_output:
+        diff_output = _run(["git", "diff"])  # fallback for initial commits
+    if diff_output:
+        if len(diff_output) > MAX_GIT_DIFF_CHARS:
+            diff_output = diff_output[:MAX_GIT_DIFF_CHARS] + "\n\n... [diff truncated]"
+        parts.append(f"### Uncommitted Changes\n```diff\n{diff_output}\n```")
+
+    # Staged but not committed
+    staged = _run(["git", "diff", "--cached"])
+    if staged and staged != diff_output:
+        if len(staged) > MAX_GIT_DIFF_CHARS // 2:
+            staged = staged[:MAX_GIT_DIFF_CHARS // 2] + "\n\n... [staged diff truncated]"
+        parts.append(f"### Staged Changes\n```diff\n{staged}\n```")
+
+    if not parts:
+        return ""
+
+    return "## Git Context\n\n" + "\n\n".join(parts)
+
+
 def _compute_cooldown_seconds(consecutive_failures: int) -> int:
     base = max(1, REVIEW_FAILURE_COOLDOWN_SECONDS)
     cooldown = base * (2 ** max(0, consecutive_failures - 1))
@@ -230,8 +280,9 @@ def _run_inner(session_id: str, transcript_path: str, force: bool = False, proje
 
     last_review = _read_last_review(session_id)
     project_description = _read_project_description(project_cwd)
+    git_context = _get_git_context(project_cwd)
 
-    context_text, updated_state = build_review_context(turns, state, project_description)
+    context_text, updated_state = build_review_context(turns, state, project_description, git_context)
     updated_state = _mark_attempt_started(updated_state)
     review_number = updated_state["review_count"]
     save_state(session_id, updated_state)

@@ -140,6 +140,7 @@ def build_review_prompt(context_text: str, review_number: int, last_review: str 
         "**Reading Guide**:\n"
         "- \"Project Background\" is a brief project description\n"
         "- \"Earlier Conversation Summary\" is an AI-compressed historical overview; details may be simplified\n"
+        "- \"Git Context\" (if present) shows recent commits and uncommitted changes — use this to verify claims in the conversation\n"
         "- \"Recent Conversation\" is the verbatim text of recent exchanges — this is your primary review basis\n"
         "- If context is insufficient to judge an issue, flag it rather than guessing"
     )

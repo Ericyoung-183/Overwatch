@@ -38,6 +38,7 @@ TURN_THRESHOLD = 10  # Auto-trigger review every N user turns
 RECENT_WINDOW_SIZE = 20  # Keep last N user-assistant exchanges verbatim
 MAX_SUMMARY_CHARS = 5000  # Rolling summary max characters
 MAX_TURN_CONTENT_CHARS = 4000  # Per-turn content truncation limit
+MAX_GIT_DIFF_CHARS = 8000  # Git diff truncation limit for review context
 
 # --- API ---
 API_BASE_URL = _clean_env(
