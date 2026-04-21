@@ -224,3 +224,104 @@ def call_claude(system_prompt: str, user_message: str, model: str = None,
     if isinstance(last_error, OverwatchAPIError):
         return last_error.as_text()
     return f"[Overwatch Error: {type(last_error).__name__}] {str(last_error)}"
+
+
+def call_claude_with_tools(
+    system_prompt: str,
+    user_message: str,
+    tool_definitions: list[dict],
+    tool_executor,
+    project_cwd: str = "",
+    model: str = None,
+    max_tokens: int = None,
+    max_tool_rounds: int = 3,
+) -> str:
+    """Call Claude API with tool use in an agentic loop.
+
+    The model can request tool calls (grep, read_file, etc.). We execute them
+    locally and feed results back, up to max_tool_rounds. Returns the final
+    text response.
+
+    Only supports Anthropic format (tool_use is Anthropic-native).
+    Falls back to call_claude() if API_FORMAT is 'openai'.
+    """
+    if API_FORMAT == "openai":
+        # OpenAI tool calling has a different schema; fall back to simple call
+        return call_claude(system_prompt, user_message, model, max_tokens, thinking=True)
+
+    model = model or REVIEW_MODEL
+    max_tokens = max_tokens or MAX_REVIEW_TOKENS
+    is_claude = "claude" in model.lower()
+
+    messages = [{"role": "user", "content": user_message}]
+
+    payload_base = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "system": system_prompt,
+        "tools": tool_definitions,
+    }
+    if is_claude and max_tokens > 4000:
+        payload_base["thinking"] = {
+            "type": "enabled",
+            "budget_tokens": max_tokens - 4000,
+        }
+
+    headers = {
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01",
+    }
+    if API_AUTH_TOKEN:
+        headers["x-api-key"] = API_AUTH_TOKEN
+
+    for round_num in range(max_tool_rounds + 1):
+        payload = {**payload_base, "messages": messages}
+
+        try:
+            result = _post_messages(payload, headers, "anthropic")
+        except OverwatchAPIError as e:
+            return e.as_text()
+        except Exception as e:
+            return f"[Overwatch Error: {type(e).__name__}] {str(e)}"
+
+        # Extract content blocks
+        content = result.get("content", [])
+        stop_reason = result.get("stop_reason", "end_turn")
+
+        # Collect text parts and tool calls
+        text_parts = []
+        tool_calls = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text" and block.get("text"):
+                text_parts.append(block["text"])
+            elif block.get("type") == "tool_use":
+                tool_calls.append(block)
+
+        # If no tool calls or we've hit the round limit, return text
+        if not tool_calls or round_num >= max_tool_rounds:
+            return "\n".join(text_parts).strip() if text_parts else _extract_response_text(result)
+
+        # Execute tool calls and build tool results
+        # First, add the assistant's response (with tool_use blocks) to messages
+        messages.append({"role": "assistant", "content": content})
+
+        tool_results = []
+        for tc in tool_calls:
+            tool_name = tc.get("name", "")
+            tool_input = tc.get("input", {})
+            tool_id = tc.get("id", "")
+
+            tool_output = tool_executor(tool_name, tool_input, project_cwd)
+
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": tool_id,
+                "content": tool_output,
+            })
+
+        messages.append({"role": "user", "content": tool_results})
+
+    # Shouldn't reach here, but just in case
+    return "\n".join(text_parts).strip() if text_parts else "[Overwatch Error: tool loop exhausted]"

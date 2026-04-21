@@ -20,7 +20,7 @@ from config import (
     REVIEW_FAILURE_COOLDOWN_SECONDS,
     REVIEW_MAX_COOLDOWN_SECONDS,
 )
-from api_client import call_claude
+from api_client import call_claude, call_claude_with_tools
 from adapters import get_adapter
 from context_manager import load_state, save_state, build_review_context
 from prompts import build_review_prompt
@@ -446,7 +446,18 @@ def _run_inner(session_id: str, transcript_path: str, force: bool = False, proje
 
     started = time.time()
     log("api_call_start", session_id=session_id, review=review_number, model=REVIEW_MODEL)
-    review_text = call_claude(system_prompt, user_message)
+
+    # Use agentic review (with tools) when project_cwd is available
+    if project_cwd:
+        from tools import TOOL_DEFINITIONS, execute_tool
+        review_text = call_claude_with_tools(
+            system_prompt, user_message,
+            tool_definitions=TOOL_DEFINITIONS,
+            tool_executor=execute_tool,
+            project_cwd=project_cwd,
+        )
+    else:
+        review_text = call_claude(system_prompt, user_message)
     latency_ms = int((time.time() - started) * 1000)
 
     if review_text.startswith("[Overwatch") and ("Error" in review_text or "API Error" in review_text):
