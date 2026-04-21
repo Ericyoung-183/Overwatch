@@ -35,7 +35,7 @@ CURRENT_REVIEW_LINK = os.path.join(REVIEWS_DIR, "_current.md")
 TURN_THRESHOLD = 10  # Auto-trigger review every N user turns
 
 # --- Context Window ---
-RECENT_WINDOW_SIZE = 10  # Keep last N user-assistant exchanges verbatim
+RECENT_WINDOW_SIZE = 20  # Keep last N user-assistant exchanges verbatim
 MAX_SUMMARY_CHARS = 5000  # Rolling summary max characters
 MAX_TURN_CONTENT_CHARS = 4000  # Per-turn content truncation limit
 
