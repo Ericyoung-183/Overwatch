@@ -115,6 +115,105 @@ def _read_project_description(project_cwd: str) -> str:
         return ""
 
 
+def _read_user_context(project_cwd: str) -> str:
+    """Auto-discover and read user's memory files for personalized review context.
+
+    Reads (if they exist):
+    - Global CLAUDE.md (~/.claude/CLAUDE.md) — user's engineering standards
+    - Project CLAUDE.md (project/.claude/CLAUDE.md) — project context
+    - Project memory feedback files (feedback_*.md) — lessons learned
+
+    Returns formatted context string, or empty if nothing found.
+    """
+    from config import CC_PROJECTS_BASE, CC_PROJECTS_FALLBACKS
+    import glob
+    import hashlib
+
+    sections = []
+    extra_paths = os.environ.get("OVERWATCH_CONTEXT_PATHS", "")
+
+    # 1. Global CLAUDE.md (L2 — user's engineering standards)
+    global_claude = os.path.expanduser("~/.claude/CLAUDE.md")
+    if os.path.isfile(global_claude):
+        try:
+            with open(global_claude, "r", encoding="utf-8") as f:
+                content = f.read()
+            if content.strip():
+                # Truncate to keep context manageable
+                if len(content) > 3000:
+                    content = content[:3000] + "\n\n... [truncated]"
+                sections.append(f"### User Engineering Standards\n{content}")
+        except Exception:
+            pass
+
+    # 2. Project CLAUDE.md (L3 — project context)
+    if project_cwd:
+        project_claude = os.path.join(project_cwd, ".claude", "CLAUDE.md")
+        if os.path.isfile(project_claude):
+            try:
+                with open(project_claude, "r", encoding="utf-8") as f:
+                    content = f.read()
+                if content.strip():
+                    if len(content) > 2000:
+                        content = content[:2000] + "\n\n... [truncated]"
+                    sections.append(f"### Project Context\n{content}")
+            except Exception:
+                pass
+
+    # 3. Project memory feedback files (L4 — lessons learned)
+    if project_cwd:
+        # Discover memory directory: try CC_PROJECTS_BASE + fallbacks
+        # CC encodes paths: / → -, non-ASCII → -, leading - kept
+        encoded = "".join(c if c.isascii() and c not in "/" else "-" for c in project_cwd)
+        search_dirs = [CC_PROJECTS_BASE] + CC_PROJECTS_FALLBACKS
+        feedback_texts = []
+
+        for base in search_dirs:
+            memory_dir = os.path.join(base, encoded, "memory")
+            if not os.path.isdir(memory_dir):
+                continue
+            for fb_file in sorted(glob.glob(os.path.join(memory_dir, "feedback_*.md"))):
+                try:
+                    with open(fb_file, "r", encoding="utf-8") as f:
+                        text = f.read().strip()
+                    if text:
+                        # Strip frontmatter, keep content
+                        if text.startswith("---"):
+                            parts = text.split("---", 2)
+                            if len(parts) >= 3:
+                                text = parts[2].strip()
+                        name = os.path.basename(fb_file)
+                        feedback_texts.append(f"**{name}**: {text[:500]}")
+                except Exception:
+                    continue
+            if feedback_texts:
+                break  # Found memory in this dir, don't check fallbacks
+
+        if feedback_texts:
+            combined = "\n\n".join(feedback_texts)
+            if len(combined) > 3000:
+                combined = combined[:3000] + "\n\n... [truncated]"
+            sections.append(f"### Project Lessons (from memory)\n{combined}")
+
+    # 4. Extra paths from env var (escape hatch, undocumented)
+    if extra_paths:
+        for p in extra_paths.split(":"):
+            p = os.path.expanduser(p.strip())
+            if os.path.isfile(p):
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        content = f.read()[:2000].strip()
+                    if content:
+                        sections.append(f"### {os.path.basename(p)}\n{content}")
+                except Exception:
+                    pass
+
+    if not sections:
+        return ""
+
+    return "## User Context\n\n" + "\n\n---\n\n".join(sections)
+
+
 def should_trigger_early(transcript_path: str, last_n_lines: int = 30) -> bool:
     """Check if recent transcript content warrants an early review trigger.
 
@@ -333,8 +432,9 @@ def _run_inner(session_id: str, transcript_path: str, force: bool = False, proje
     last_review = _read_last_review(session_id)
     project_description = _read_project_description(project_cwd)
     git_context = _get_git_context(project_cwd)
+    user_context = _read_user_context(project_cwd)
 
-    context_text, updated_state = build_review_context(turns, state, project_description, git_context)
+    context_text, updated_state = build_review_context(turns, state, project_description, git_context, user_context)
     updated_state = _mark_attempt_started(updated_state)
     review_number = updated_state["review_count"]
     save_state(session_id, updated_state)

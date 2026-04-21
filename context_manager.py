@@ -149,6 +149,7 @@ def build_review_context(
     state: dict,
     project_description: str = "",
     git_context: str = "",
+    user_context: str = "",
 ) -> tuple[str, dict]:
     """Build the complete context for the review API call.
 
@@ -179,6 +180,9 @@ def build_review_context(
 
     if running_summary:
         sections.append(f"## Earlier Conversation Summary\n{running_summary}")
+
+    if user_context:
+        sections.append(user_context)
 
     if git_context:
         sections.append(git_context)

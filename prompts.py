@@ -139,6 +139,7 @@ def build_review_prompt(context_text: str, review_number: int, last_review: str 
         "Please review it as an independent Overwatch observer.\n\n"
         "**Reading Guide**:\n"
         "- \"Project Background\" is a brief project description\n"
+        "- \"User Context\" (if present) contains the user's engineering standards, project config, and lessons from past sessions — use these as review criteria. Check if the Builder is following these rules.\n"
         "- \"Earlier Conversation Summary\" is an AI-compressed historical overview; details may be simplified\n"
         "- \"Git Context\" (if present) shows recent commits and uncommitted changes — use this to verify claims in the conversation\n"
         "- \"Recent Conversation\" is the verbatim text of recent exchanges — this is your primary review basis\n"
