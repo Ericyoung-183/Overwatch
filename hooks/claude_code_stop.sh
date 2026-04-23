@@ -115,14 +115,22 @@ if [ -f "$STATE_FILE" ]; then
     REVIEW_COUNT=$(OW_FILE="$STATE_FILE" python3 -c "import json,os; print(json.load(open(os.environ['OW_FILE'])).get('review_count',0))" 2>/dev/null || echo "0")
 fi
 
-CURRENT_TURNS=$(OW_TRANSCRIPT="$TRANSCRIPT_PATH" python3 -c "
-import os, sys; sys.path.insert(0, '$OVERWATCH_DIR')
+# Parse transcript ONCE — reuse for both turn counting and smart trigger
+PARSE_OUTPUT=$(OW_TRANSCRIPT="$TRANSCRIPT_PATH" python3 -c "
+import os, sys, json; sys.path.insert(0, '$OVERWATCH_DIR')
 from config import ADAPTER
 from adapters import get_adapter
 parse = get_adapter(ADAPTER)
 turns = parse(os.environ['OW_TRANSCRIPT'])
-print(len([t for t in turns if t.role == 'user']))
-" 2>/dev/null || echo "0")
+user_count = len([t for t in turns if t.role == 'user'])
+# Serialize turns for smart trigger (only needed fields to keep payload small)
+tool_names = [t.tool_name for t in turns if t.role == 'tool_use']
+user_contents = [t.content[:500] for t in turns if t.role == 'user']
+bash_contents = [t.content[:300] for t in turns if t.role == 'tool_use' and t.tool_name == 'Bash']
+print(json.dumps({'user_count': user_count, 'tool_names': tool_names, 'user_contents': user_contents, 'bash_contents': bash_contents}))
+" 2>/dev/null || echo '{}')
+
+CURRENT_TURNS=$(echo "$PARSE_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('user_count',0))" 2>/dev/null || echo "0")
 
 DIFF=$((CURRENT_TURNS - LAST_REVIEWED))
 
@@ -141,12 +149,41 @@ elif [ "$DIFF" -ge "$EFFECTIVE_MAX" ]; then
     # Hard ceiling — force trigger
     :
 elif [ "$SMART_TRIGGER" = "True" ]; then
-    # Between MIN and MAX — check content signals
-    SHOULD_TRIGGER=$(OW_TRANSCRIPT="$TRANSCRIPT_PATH" python3 -c "
-import sys; sys.path.insert(0, '$OVERWATCH_DIR')
-from overwatch import should_trigger_early
-import os
-print('yes' if should_trigger_early(os.environ['OW_TRANSCRIPT']) else 'no')
+    # Between MIN and MAX — check content signals (using pre-parsed data)
+    SHOULD_TRIGGER=$(echo "$PARSE_OUTPUT" | python3 -c "
+import sys, json, re
+data = json.load(sys.stdin)
+tool_names = data.get('tool_names', [])
+user_contents = data.get('user_contents', [])
+bash_contents = data.get('bash_contents', [])
+
+# Signal 1: User review request (last 3 messages)
+review_patterns = [r'\breview\b', r'\b审查\b', r'\b诊断\b', r'检查', r'确认一下', r'看看对不对', r'完整检查']
+for text in user_contents[-3:]:
+    t = text.lower()
+    for p in review_patterns:
+        if re.search(p, t):
+            print('yes'); sys.exit(0)
+
+# Signal 2: User correction (last 3 messages)
+correction_patterns = [r'不对', r'错了', r'搞错', r'不是这样', r'重新来', r'再想想', r'\bwrong\b', r'\bnot what i\b', r'\bstill broken\b', r'\bredo\b']
+for text in user_contents[-3:]:
+    t = text.lower()
+    for p in correction_patterns:
+        if re.search(p, t):
+            print('yes'); sys.exit(0)
+
+# Signal 3: High file-change density (5+ Write/Edit in last 15)
+recent = tool_names[-15:]
+if sum(1 for n in recent if n in ('Write', 'Edit')) >= 5:
+    print('yes'); sys.exit(0)
+
+# Signal 4: git commit/push in recent Bash commands
+for cmd in bash_contents[-5:]:
+    if 'git commit' in cmd.lower() or 'git push' in cmd.lower():
+        print('yes'); sys.exit(0)
+
+print('no')
 " 2>/dev/null || echo "no")
     if [ "$SHOULD_TRIGGER" = "no" ]; then
         REMAINING=$((EFFECTIVE_MAX - DIFF))

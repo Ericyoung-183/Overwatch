@@ -203,54 +203,80 @@ def _read_user_context(project_cwd: str) -> str:
     return result
 
 
-def should_trigger_early(transcript_path: str, last_n_lines: int = 30) -> bool:
+def should_trigger_early(transcript_path: str = "", turns: list = None) -> bool:
     """Check if recent transcript content warrants an early review trigger.
 
-    Scans the last N lines for signals like git commits, user corrections,
-    design decisions, or high file-change density. Called from the Stop hook.
+    Parses the transcript via the adapter (structured, not raw text) and only
+    scans user messages for signals. This avoids false positives from file paths,
+    tool outputs, and JSONL structure that plagued the raw-text approach.
+
+    Accepts either a transcript_path (will parse) or pre-parsed turns list
+    (avoids double-parsing when the hook already has turns).
+
+    Signals:
+    1. User explicitly requests review/check
+    2. User corrects or expresses frustration with the AI
+    3. High file-change density (many Write/Edit in recent turns)
+    4. git commit/push just happened
     """
     import re
 
-    try:
-        # Read tail of transcript efficiently
-        with open(transcript_path, "rb") as f:
-            f.seek(0, 2)
-            size = f.tell()
-            # Read last ~50KB (plenty for 30 lines)
-            f.seek(max(0, size - 50000))
-            tail = f.read().decode("utf-8", errors="replace")
-        lines = tail.strip().split("\n")[-last_n_lines:]
-    except Exception:
+    if turns is None:
+        if not transcript_path:
+            return False
+        try:
+            parse = get_adapter(ADAPTER)
+            turns = parse(transcript_path, offset=0)
+        except Exception:
+            return False
+
+    if not turns:
         return False
 
-    text_block = " ".join(lines).lower()
+    user_turns = [t for t in turns if t.role == "user"]
+    tool_turns = [t for t in turns if t.role == "tool_use"]
 
-    # Decode \uXXXX escapes (some transcript encoders may use ASCII-escaped Chinese)
-    if "\\u" in text_block:
-        text_block = re.sub(
-            r"\\u([0-9a-f]{4})",
-            lambda m: chr(int(m.group(1), 16)),
-            text_block,
-        )
+    if not user_turns:
+        return False
 
-    # Signal 1: git commit happened
-    if "git commit" in text_block or "git push" in text_block:
+    # Signal 1: User explicitly requests review (scan last 3 user messages)
+    review_patterns = [
+        r'\breview\b', r'\b审查\b', r'\b诊断\b',
+        r'检查', r'确认一下', r'看看对不对', r'完整检查',
+    ]
+    for turn in user_turns[-3:]:
+        text = turn.content.lower()
+        for pattern in review_patterns:
+            if re.search(pattern, text):
+                log("smart_trigger_signal", signal="review_request", turn=turn.index, match=pattern)
+                return True
+
+    # Signal 2: User correction / frustration (scan last 3 user messages)
+    correction_patterns = [
+        r'不对', r'错了', r'搞错', r'不是这样', r'重新来', r'再想想',
+        r'\bwrong\b', r'\bnot what i\b', r'\bstill broken\b', r'\bredo\b',
+    ]
+    for turn in user_turns[-3:]:
+        text = turn.content.lower()
+        for pattern in correction_patterns:
+            if re.search(pattern, text):
+                log("smart_trigger_signal", signal="user_correction", turn=turn.index, match=pattern)
+                return True
+
+    # Signal 3: High file-change density (5+ Write/Edit in last 15 tool_use turns)
+    recent_tool_names = [t.tool_name for t in tool_turns[-15:]]
+    write_edit_count = sum(1 for n in recent_tool_names if n in ("Write", "Edit"))
+    if write_edit_count >= 5:
+        log("smart_trigger_signal", signal="high_edit_density", write_edit_count=write_edit_count)
         return True
 
-    # Signal 2: user requesting review/check
-    review_keywords = ["检查", "review", "确认一下", "看看对不对", "完整检查", "check"]
-    if any(kw in text_block for kw in review_keywords):
-        return True
-
-    # Signal 3: user correction / frustration (re-do signals)
-    correction_keywords = ["不对", "错了", "wrong", "再想", "重新", "再来", "搞错"]
-    if any(kw in text_block for kw in correction_keywords):
-        return True
-
-    # Signal 4: high file-write density (many tool_use with write/edit)
-    write_count = text_block.count('"tool_name"') + text_block.count('"type":"tool_use"')
-    if write_count >= 8:
-        return True
+    # Signal 4: git commit/push just happened (check recent Bash tool_use)
+    for t in tool_turns[-5:]:
+        if t.tool_name == "Bash" and t.content:
+            cmd = t.content.lower()
+            if "git commit" in cmd or "git push" in cmd:
+                log("smart_trigger_signal", signal="git_commit", tool_content=cmd[:100])
+                return True
 
     return False
 

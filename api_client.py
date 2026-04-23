@@ -2,9 +2,11 @@
 Zero external dependencies — uses only urllib."""
 import json
 import random
+import sys
 import time
 import urllib.request
 import urllib.error
+from datetime import datetime
 from http.client import RemoteDisconnected
 
 from config import (
@@ -22,6 +24,16 @@ from config import (
 
 
 RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
+
+
+def _log(event: str, **fields):
+    """Structured stderr logger for API client events (matches overwatch.py format)."""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    extras = " ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in fields.items())
+    msg = f"[Overwatch {timestamp}] event={event}"
+    if extras:
+        msg += " " + extras
+    print(msg, file=sys.stderr)
 
 
 class OverwatchAPIError(RuntimeError):
@@ -243,15 +255,22 @@ def call_claude_with_tools(
     text response.
 
     Only supports Anthropic format (tool_use is Anthropic-native).
-    Falls back to call_claude() if API_FORMAT is 'openai'.
+    Falls back to call_claude() if API_FORMAT is 'openai' or model is not Claude.
     """
     if API_FORMAT == "openai":
         # OpenAI tool calling has a different schema; fall back to simple call
+        _log("agentic_review_skip", reason="openai_format_no_tools", model=model or REVIEW_MODEL)
         return call_claude(system_prompt, user_message, model, max_tokens, thinking=True)
 
     model = model or REVIEW_MODEL
     max_tokens = max_tokens or MAX_REVIEW_TOKENS
     is_claude = "claude" in model.lower()
+
+    if not is_claude:
+        # Non-Claude models via Anthropic format don't reliably support tool_use;
+        # fall back to simple call without tools
+        _log("agentic_review_skip", reason="non_claude_model_no_tools", model=model)
+        return call_claude(system_prompt, user_message, model, max_tokens, thinking=False)
 
     messages = [{"role": "user", "content": user_message}]
 
@@ -273,6 +292,8 @@ def call_claude_with_tools(
     }
     if API_AUTH_TOKEN:
         headers["x-api-key"] = API_AUTH_TOKEN
+
+    total_tool_calls = 0
 
     for round_num in range(max_tool_rounds + 1):
         payload = {**payload_base, "messages": messages}
@@ -308,6 +329,8 @@ def call_claude_with_tools(
 
         # If no tool calls or we've hit the round limit, return text
         if not tool_calls or round_num >= max_tool_rounds:
+            if total_tool_calls > 0:
+                _log("agentic_review_complete", rounds=round_num + 1, total_tool_calls=total_tool_calls)
             return "\n".join(text_parts).strip() if text_parts else _extract_response_text(result)
 
         # Execute tool calls and build tool results
@@ -320,7 +343,13 @@ def call_claude_with_tools(
             tool_input = tc.get("input", {})
             tool_id = tc.get("id", "")
 
+            total_tool_calls += 1
+            input_preview = json.dumps(tool_input, ensure_ascii=False)[:200]
+            _log("tool_call", round=round_num + 1, tool=tool_name, input=input_preview)
+
             tool_output = tool_executor(tool_name, tool_input, project_cwd)
+
+            _log("tool_result", round=round_num + 1, tool=tool_name, result_length=len(tool_output))
 
             tool_results.append({
                 "type": "tool_result",
@@ -331,4 +360,5 @@ def call_claude_with_tools(
         messages.append({"role": "user", "content": tool_results})
 
     # Shouldn't reach here, but just in case
+    _log("agentic_review_exhausted", rounds=max_tool_rounds, total_tool_calls=total_tool_calls)
     return "\n".join(text_parts).strip() if text_parts else "[Overwatch Error: tool loop exhausted]"
