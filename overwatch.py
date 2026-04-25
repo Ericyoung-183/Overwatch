@@ -341,12 +341,20 @@ def _compute_cooldown_seconds(consecutive_failures: int) -> int:
     return min(cooldown, max(base, REVIEW_MAX_COOLDOWN_SECONDS))
 
 
+MAX_CONSECUTIVE_FAILURES = 5  # After this many failures, reset and try fresh
+
+
 def _is_in_cooldown(state: dict) -> bool:
     cooldown_until = state.get("cooldown_until", "")
     if not cooldown_until:
         return False
     try:
-        return datetime.now() < datetime.fromisoformat(cooldown_until)
+        if datetime.now() >= datetime.fromisoformat(cooldown_until):
+            return False
+        # Auto-reset after too many consecutive failures to avoid permanent lockout
+        if int(state.get("consecutive_failures", 0)) >= MAX_CONSECUTIVE_FAILURES:
+            return False
+        return True
     except ValueError:
         return False
 
@@ -371,6 +379,16 @@ def _mark_review_success(state: dict) -> dict:
 
 def _mark_review_failure(state: dict, error_message: str) -> dict:
     failures = int(state.get("consecutive_failures", 0)) + 1
+    if failures >= MAX_CONSECUTIVE_FAILURES:
+        # Reset to give a fresh start after too many failures
+        log("cooldown_reset", consecutive_failures=failures, reason="max_failures_reached")
+        return {
+            **state,
+            "last_review_status": "failed",
+            "last_error": error_message[:1000],
+            "consecutive_failures": 0,
+            "cooldown_until": "",
+        }
     cooldown_seconds = _compute_cooldown_seconds(failures)
     cooldown_until = (datetime.now() + timedelta(seconds=cooldown_seconds)).isoformat(timespec="seconds")
     return {
