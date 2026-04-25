@@ -9,6 +9,26 @@ import urllib.error
 from datetime import datetime
 from http.client import RemoteDisconnected
 
+from prompts import TOOLS_SECTION, NO_TOOLS_SECTION
+
+
+def _strip_tools_section(system_prompt: str) -> str:
+    """Replace the TOOLS_SECTION in a system prompt with NO_TOOLS_SECTION.
+
+    Used when degrading from agentic review to simple review — the prompt was
+    built with tool instructions, but tools are no longer available.
+    """
+    if TOOLS_SECTION in system_prompt:
+        return system_prompt.replace(TOOLS_SECTION, NO_TOOLS_SECTION)
+    # Fallback: if exact match fails, try regex on the section header
+    import re
+    stripped = re.sub(r"\n## Tools\n.*?(?=\n## |\Z)", "\n" + NO_TOOLS_SECTION + "\n", system_prompt, flags=re.DOTALL)
+    if "## Tools" not in stripped or NO_TOOLS_SECTION in stripped:
+        return stripped
+    _log("strip_tools_failed", reason="TOOLS_SECTION not found and regex fallback failed")
+    return system_prompt
+
+
 from config import (
     API_BASE_URL,
     API_AUTH_TOKEN,
@@ -257,7 +277,7 @@ def call_claude_with_tools(
     project_cwd: str = "",
     model: str = None,
     max_tokens: int = None,
-    max_tool_rounds: int = 3,
+    max_tool_rounds: int = 1,
 ) -> str:
     """Call Claude API with tool use in an agentic loop.
 
@@ -287,7 +307,7 @@ def call_claude_with_tools(
 
     payload_base = {
         "model": model,
-        "max_tokens": max_tokens,
+        "max_tokens": min(max_tokens, 8000),  # Cap agentic review output to reduce proxy timeout risk
         "system": system_prompt,
         "tools": tool_definitions,
     }
@@ -316,6 +336,13 @@ def call_claude_with_tools(
                 if attempt < API_MAX_RETRIES and _should_retry_error(exc):
                     _sleep_before_retry(attempt)
                     continue
+                # Round 2+ API error — degrade to simple review without tools.
+                # Round 1 text is transitional ("Let me check..."), not a review conclusion.
+                if total_tool_calls > 0:
+                    _log("agentic_degraded_to_simple", reason="api_error_after_tools", round=round_num + 1,
+                         total_tool_calls=total_tool_calls, error=str(exc)[:200])
+                    degraded_prompt = _strip_tools_section(system_prompt)
+                    return call_claude(degraded_prompt, user_message, model, max_tokens, thinking=False)
                 if isinstance(exc, OverwatchAPIError):
                     return exc.as_text()
                 return f"[Overwatch Error: {type(exc).__name__}] {str(exc)}"
@@ -325,9 +352,23 @@ def call_claude_with_tools(
         stop_reason = result.get("stop_reason", "end_turn")
 
         # Diagnostic: log content block types for debugging empty responses
-        if isinstance(content, list):
+        if isinstance(content, list) and content:
             block_types = [b.get("type", "?") if isinstance(b, dict) else type(b).__name__ for b in content]
             _log("response_blocks", round=round_num + 1, stop_reason=stop_reason, blocks=block_types)
+        else:
+            # content is empty/None — check if response is wrapped in a proxy envelope
+            data = result.get("data") if isinstance(result, dict) else None
+            if isinstance(data, dict):
+                inner_content = data.get("content", [])
+                inner_stop = data.get("stop_reason", "?")
+                inner_types = [b.get("type", "?") if isinstance(b, dict) else type(b).__name__ for b in inner_content] if isinstance(inner_content, list) else []
+                _log("proxy_envelope", round=round_num + 1, inner_stop=inner_stop, inner_types=inner_types,
+                     data_keys=list(data.keys()))
+            else:
+                data_type = type(result.get("data")).__name__ if isinstance(result, dict) and "data" in result else "no_data_key"
+                data_preview = str(result.get("data", ""))[:200] if isinstance(result, dict) and "data" in result else ""
+                _log("empty_content_no_data", round=round_num + 1, result_keys=list(result.keys()) if isinstance(result, dict) else None,
+                     data_type=data_type, data_preview=data_preview)
 
         # Collect text parts and tool calls
         text_parts = []
@@ -372,6 +413,11 @@ def call_claude_with_tools(
             _log("tool_call", round=round_num + 1, tool=tool_name, input=input_preview)
 
             tool_output = tool_executor(tool_name, tool_input, project_cwd)
+
+            # Truncate large tool outputs to avoid proxy timeouts on subsequent rounds
+            MAX_TOOL_RESULT_CHARS = 8000
+            if len(tool_output) > MAX_TOOL_RESULT_CHARS:
+                tool_output = tool_output[:MAX_TOOL_RESULT_CHARS] + f"\n... [truncated, {len(tool_output)} chars total]"
 
             _log("tool_result", round=round_num + 1, tool=tool_name, result_length=len(tool_output))
 
