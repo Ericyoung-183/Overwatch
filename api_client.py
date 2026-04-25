@@ -280,11 +280,8 @@ def call_claude_with_tools(
         "system": system_prompt,
         "tools": tool_definitions,
     }
-    if is_claude and max_tokens > 4000:
-        payload_base["thinking"] = {
-            "type": "enabled",
-            "budget_tokens": max_tokens - 4000,
-        }
+    # No extended thinking for agentic review — tools provide verification,
+    # and thinking + tools + large context causes proxy timeouts
 
     headers = {
         "Content-Type": "application/json",
