@@ -79,14 +79,20 @@ def _extract_response_text(result: dict) -> str:
     text_parts = []
 
     if isinstance(content, list):
+        thinking_parts = []  # Collect thinking blocks as fallback
         for block in content:
             if isinstance(block, dict):
                 if block.get("type") == "text" and block.get("text"):
                     text_parts.append(block["text"])
+                elif block.get("type") == "thinking" and block.get("thinking"):
+                    thinking_parts.append(block["thinking"])
                 elif isinstance(block.get("content"), str):
                     text_parts.append(block["content"])
             elif isinstance(block, str):
                 text_parts.append(block)
+        # Fallback: if no text blocks but thinking blocks exist, use thinking content
+        if not text_parts and thinking_parts:
+            text_parts = thinking_parts
     elif isinstance(content, str):
         text_parts.append(content)
 
@@ -219,6 +225,11 @@ def call_claude(system_prompt: str, user_message: str, model: str = None,
             text = _extract_response_text(result)
             if text:
                 return text
+            # Diagnostic: log why extraction failed
+            content = result.get("content", []) if isinstance(result, dict) else []
+            block_types = [b.get("type", "?") if isinstance(b, dict) else type(b).__name__ for b in content] if isinstance(content, list) else []
+            _log("empty_response", attempt=attempt, block_types=block_types,
+                 response_preview=_response_preview(result)[:300])
             retryable = attempt < total_attempts
             raise OverwatchAPIError(
                 code="Error: EmptyContent",
@@ -313,22 +324,38 @@ def call_claude_with_tools(
         content = result.get("content", [])
         stop_reason = result.get("stop_reason", "end_turn")
 
+        # Diagnostic: log content block types for debugging empty responses
+        if isinstance(content, list):
+            block_types = [b.get("type", "?") if isinstance(b, dict) else type(b).__name__ for b in content]
+            _log("response_blocks", round=round_num + 1, stop_reason=stop_reason, blocks=block_types)
+
         # Collect text parts and tool calls
         text_parts = []
+        thinking_parts = []
         tool_calls = []
         for block in content:
             if not isinstance(block, dict):
                 continue
             if block.get("type") == "text" and block.get("text"):
                 text_parts.append(block["text"])
+            elif block.get("type") == "thinking" and block.get("thinking"):
+                thinking_parts.append(block["thinking"])
             elif block.get("type") == "tool_use":
                 tool_calls.append(block)
+        # Fallback: if no text blocks but thinking blocks exist, use thinking content
+        if not text_parts and thinking_parts:
+            text_parts = thinking_parts
 
         # If no tool calls or we've hit the round limit, return text
         if not tool_calls or round_num >= max_tool_rounds:
             if total_tool_calls > 0:
                 _log("agentic_review_complete", rounds=round_num + 1, total_tool_calls=total_tool_calls)
-            return "\n".join(text_parts).strip() if text_parts else _extract_response_text(result)
+            final_text = "\n".join(text_parts).strip() if text_parts else _extract_response_text(result)
+            if not final_text:
+                _log("agentic_review_empty", rounds=round_num + 1, total_tool_calls=total_tool_calls,
+                     text_parts=len(text_parts), stop_reason=stop_reason,
+                     response_keys=list(result.keys()) if isinstance(result, dict) else None)
+            return final_text
 
         # Execute tool calls and build tool results
         # First, add the assistant's response (with tool_use blocks) to messages
