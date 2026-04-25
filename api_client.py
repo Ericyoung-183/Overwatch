@@ -260,7 +260,7 @@ def call_claude_with_tools(
     if API_FORMAT == "openai":
         # OpenAI tool calling has a different schema; fall back to simple call
         _log("agentic_review_skip", reason="openai_format_no_tools", model=model or REVIEW_MODEL)
-        return call_claude(system_prompt, user_message, model, max_tokens, thinking=True)
+        return call_claude(system_prompt, user_message, model, max_tokens, thinking=False)
 
     model = model or REVIEW_MODEL
     max_tokens = max_tokens or MAX_REVIEW_TOKENS

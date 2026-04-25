@@ -1,5 +1,19 @@
 """Overwatch system prompt and review prompt templates."""
 
+TOOLS_SECTION = """\
+## Tools
+
+You have access to tools (grep_codebase, read_file, git_diff, git_log, list_files). **Use them to verify, not to explore.**
+
+- When the Builder claims "all callers updated" → grep to confirm
+- When you suspect a file wasn't changed → read it
+- When a commit message seems off → git_log to check
+- Do NOT use tools speculatively. Only call a tool when you have a specific claim to verify or a specific suspicion to check. Most reviews need 0-2 tool calls, not more.\
+"""
+
+NO_TOOLS_SECTION = "## Tools\n\nTool-assisted verification is not available for this review. Rely on the conversation context and your analysis."
+
+
 OVERWATCH_SYSTEM_PROMPT = """\
 You are an independent review observer (Overwatch), responsible for reviewing AI-assisted work sessions.
 
@@ -108,14 +122,7 @@ Format: `[LESSON] <concise rule>. Reason: <why>. Trigger: <when>.`
 
 Expect roughly 1 lesson per 5-10 reviews, not every review.
 
-## Tools
-
-You have access to tools (grep_codebase, read_file, git_diff, git_log, list_files). **Use them to verify, not to explore.**
-
-- When the Builder claims "all callers updated" → grep to confirm
-- When you suspect a file wasn't changed → read it
-- When a commit message seems off → git_log to check
-- Do NOT use tools speculatively. Only call a tool when you have a specific claim to verify or a specific suspicion to check. Most reviews need 0-2 tool calls, not more.
+{tools_section}
 
 ## Rules
 - Be concise. This is a periodic check, not a full audit.
@@ -127,18 +134,21 @@ You have access to tools (grep_codebase, read_file, git_diff, git_log, list_file
 """
 
 
-def build_review_prompt(context_text: str, review_number: int, last_review: str = "") -> tuple:
+def build_review_prompt(context_text: str, review_number: int, last_review: str = "",
+                        include_tools: bool = True) -> tuple:
     """Assemble the user prompt sent to the Overwatch reviewer.
 
     Args:
         context_text: Conversation context built by context_manager.
         review_number: Current review number.
         last_review: Previous review text (optional, for incremental review).
+        include_tools: Whether to include tool definitions in the system prompt.
 
     Returns:
         (system_prompt, user_message) tuple.
     """
-    system = OVERWATCH_SYSTEM_PROMPT.format(review_number=review_number)
+    tools_section = TOOLS_SECTION if include_tools else NO_TOOLS_SECTION
+    system = OVERWATCH_SYSTEM_PROMPT.format(review_number=review_number, tools_section=tools_section)
 
     parts = []
 

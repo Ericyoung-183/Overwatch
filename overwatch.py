@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
     REVIEW_MODEL,
+    API_FORMAT,
     REVIEWS_DIR,
     CURRENT_REVIEW_LINK,
     ADAPTER,
@@ -471,7 +472,10 @@ def _run_inner(session_id: str, transcript_path: str, force: bool = False, proje
     review_number = updated_state["review_count"]
     save_state(session_id, updated_state)
 
-    system_prompt, user_message = build_review_prompt(context_text, review_number, last_review)
+    # Determine if agentic review (with tools) is supported
+    use_tools = project_cwd and API_FORMAT == "anthropic" and "claude" in REVIEW_MODEL.lower()
+
+    system_prompt, user_message = build_review_prompt(context_text, review_number, last_review, include_tools=use_tools)
 
     started = time.time()
     log("api_call_start", session_id=session_id, review=review_number, model=REVIEW_MODEL)
