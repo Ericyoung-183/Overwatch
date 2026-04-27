@@ -76,9 +76,9 @@ os.replace(tmp, map_file)
 PENDING_FILE="${STATE_DIR}/auto_review_pending_${SESSION_ID}.json"
 LOCK_FILE="${STATE_DIR}/${SESSION_ID}.lock"
 if [ -f "$PENDING_FILE" ]; then
-    OUTPUT='{"continue": true, "systemMessage": "[Overwatch] Auto-review ready."}'
+    OUTPUT='{"continue": true, "systemMessage": "⏱ '"$(date +%H:%M:%S)"' | [Overwatch] Auto-review ready."}'
 elif [ -f "$LOCK_FILE" ]; then
-    OUTPUT='{"continue": true, "systemMessage": "[Overwatch] Review in progress..."}'
+    OUTPUT='{"continue": true, "systemMessage": "⏱ '"$(date +%H:%M:%S)"' | [Overwatch] Review in progress..."}'
 fi
 
 # Skip if last user message was a manual trigger (already handled by UserPromptSubmit hook)
@@ -143,7 +143,7 @@ EFFECTIVE_MIN=${TURN_MIN:-5}
 
 if [ "$DIFF" -lt "$EFFECTIVE_MIN" ]; then
     REMAINING=$((EFFECTIVE_MIN - DIFF))
-    OUTPUT="{\"continue\": true, \"systemMessage\": \"[Overwatch] ${REVIEW_COUNT} reviews | ${REMAINING}+ turns until next | Type 'overwatch' or '第二意见'\"}"
+    OUTPUT="{\"continue\": true, \"systemMessage\": \"⏱ $(date +%H:%M:%S) | [Overwatch] ${REVIEW_COUNT} reviews | ${REMAINING}+ turns until next | Type 'overwatch' or '第二意见'\"}"
     exit 0
 elif [ "$DIFF" -ge "$EFFECTIVE_MAX" ]; then
     # Hard ceiling — force trigger
@@ -187,19 +187,19 @@ print('no')
 " 2>/dev/null || echo "no")
     if [ "$SHOULD_TRIGGER" = "no" ]; then
         REMAINING=$((EFFECTIVE_MAX - DIFF))
-        OUTPUT="{\"continue\": true, \"systemMessage\": \"[Overwatch] ${REVIEW_COUNT} reviews | ${REMAINING} turns until next | Type 'overwatch' or '第二意见'\"}"
+        OUTPUT="{\"continue\": true, \"systemMessage\": \"⏱ $(date +%H:%M:%S) | [Overwatch] ${REVIEW_COUNT} reviews | ${REMAINING} turns until next | Type 'overwatch' or '第二意见'\"}"
         exit 0
     fi
     echo "[Overwatch Hook $(date +%H:%M:%S)] Smart trigger fired (session=$SESSION_ID, diff=$DIFF)" >> "$LOG_FILE" 2>&1
 elif [ "$DIFF" -lt "$TURN_THRESHOLD" ]; then
     # Smart trigger off — use baseline threshold
     REMAINING=$((TURN_THRESHOLD - DIFF))
-    OUTPUT="{\"continue\": true, \"systemMessage\": \"[Overwatch] ${REVIEW_COUNT} reviews | ${REMAINING} turns until next | Type 'overwatch' or '第二意见'\"}"
+    OUTPUT="{\"continue\": true, \"systemMessage\": \"⏱ $(date +%H:%M:%S) | [Overwatch] ${REVIEW_COUNT} reviews | ${REMAINING} turns until next | Type 'overwatch' or '第二意见'\"}"
     exit 0
 fi
 
 # Dispatch async review
-OUTPUT='{"continue": true, "systemMessage": "[Overwatch] Review triggered / 审查已触发..."}'
+OUTPUT='{"continue": true, "systemMessage": "⏱ '"$(date +%H:%M:%S)"' | [Overwatch] Review triggered / 审查已触发..."}'
 echo "[Overwatch Hook] Dispatching auto review (session=$SESSION_ID)" >> "$LOG_FILE" 2>&1
 nohup python3 "$OVERWATCH_PY" \
     --session-id "$SESSION_ID" \

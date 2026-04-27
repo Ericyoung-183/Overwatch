@@ -397,7 +397,7 @@ def _run_inner(session_id: str, transcript_path: str, force: bool = False, proje
     save_state(session_id, updated_state)
 
     # Determine if agentic review (with tools) is supported
-    use_tools = project_cwd and API_FORMAT == "anthropic" and "claude" in REVIEW_MODEL.lower()
+    use_tools = project_cwd and API_FORMAT == "anthropic"
 
     system_prompt, user_message = build_review_prompt(context_text, review_number, last_review, include_tools=use_tools)
 

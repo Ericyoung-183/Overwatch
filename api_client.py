@@ -277,7 +277,7 @@ def call_claude_with_tools(
     project_cwd: str = "",
     model: str = None,
     max_tokens: int = None,
-    max_tool_rounds: int = 1,
+    max_tool_rounds: int = 2,
 ) -> str:
     """Call Claude API with tool use in an agentic loop.
 
@@ -285,8 +285,10 @@ def call_claude_with_tools(
     locally and feed results back, up to max_tool_rounds. Returns the final
     text response.
 
-    Only supports Anthropic format (tool_use is Anthropic-native).
-    Falls back to call_claude() if API_FORMAT is 'openai' or model is not Claude.
+    Supports Anthropic format (tool_use is Anthropic-native).
+    Also supports non-Claude models that use Anthropic-compatible API format
+    (e.g. GLM-5.1 via proxy) — these support tool_use as well.
+    Falls back to call_claude() only if API_FORMAT is 'openai'.
     """
     if API_FORMAT == "openai":
         # OpenAI tool calling has a different schema; fall back to simple call
@@ -295,13 +297,6 @@ def call_claude_with_tools(
 
     model = model or REVIEW_MODEL
     max_tokens = max_tokens or MAX_REVIEW_TOKENS
-    is_claude = "claude" in model.lower()
-
-    if not is_claude:
-        # Non-Claude models via Anthropic format don't reliably support tool_use;
-        # fall back to simple call without tools
-        _log("agentic_review_skip", reason="non_claude_model_no_tools", model=model)
-        return call_claude(system_prompt, user_message, model, max_tokens, thinking=False)
 
     messages = [{"role": "user", "content": user_message}]
 
@@ -387,11 +382,53 @@ def call_claude_with_tools(
         if not text_parts and thinking_parts:
             text_parts = thinking_parts
 
-        # If no tool calls or we've hit the round limit, return text
-        if not tool_calls or round_num >= max_tool_rounds:
+        # If no tool calls, we have the final text
+        if not tool_calls:
             if total_tool_calls > 0:
                 _log("agentic_review_complete", rounds=round_num + 1, total_tool_calls=total_tool_calls)
             final_text = "\n".join(text_parts).strip() if text_parts else _extract_response_text(result)
+            if not final_text:
+                _log("agentic_review_empty", rounds=round_num + 1, total_tool_calls=total_tool_calls,
+                     text_parts=len(text_parts), stop_reason=stop_reason,
+                     response_keys=list(result.keys()) if isinstance(result, dict) else None)
+            return final_text
+
+        # If we've hit the round limit but model still wants tools,
+        # do one final call without tools to force a text summary
+        if round_num >= max_tool_rounds:
+            _log("agentic_forcing_summary", rounds=round_num + 1, total_tool_calls=total_tool_calls,
+                 pending_tools=len(tool_calls))
+            # Add tool results + explicit instruction to summarize
+            messages.append({"role": "assistant", "content": content})
+            tool_results = []
+            for tc in tool_calls:
+                tc_id = tc.get("id", "")
+                tc_name = tc.get("name", "")
+                tc_input = tc.get("input", {})
+                total_tool_calls += 1
+                _log("tool_call_skipped", round=round_num + 1, tool=tc_name,
+                     input=json.dumps(tc_input, ensure_ascii=False)[:200])
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tc_id,
+                    "content": f"(Tool call skipped — round limit reached. You already have enough information to write the review.)",
+                })
+            messages.append({"role": "user", "content": tool_results + [
+                {"type": "text", "text": "You have gathered enough information. Please write your complete review now. Do NOT request any more tools."}
+            ]})
+            # Final call without tools
+            final_payload = {k: v for k, v in payload_base.items() if k != "tools"}
+            final_payload["messages"] = messages
+            try:
+                final_result = _post_messages(final_payload, headers, "anthropic")
+                final_text = _extract_response_text(final_result)
+                if final_text:
+                    _log("agentic_review_complete", rounds=round_num + 2, total_tool_calls=total_tool_calls)
+                    return final_text
+            except Exception as exc:
+                _log("agentic_summary_failed", error=str(exc)[:200])
+            # Fallback: return whatever text we have
+            final_text = "\n".join(text_parts).strip() if text_parts else ""
             if not final_text:
                 _log("agentic_review_empty", rounds=round_num + 1, total_tool_calls=total_tool_calls,
                      text_parts=len(text_parts), stop_reason=stop_reason,
