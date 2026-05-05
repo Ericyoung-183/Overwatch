@@ -41,6 +41,36 @@ if sid:
         echo "$RESULT"
         exit 0
     fi
+
+    # Codex Desktop keeps transcripts under ~/.codex/sessions, with the
+    # session id embedded in the rollout filename.
+    RESULT=$(OW_MAP="$MAP_FILE" OW_PROJECT="$PROJECT_DIR" python3 -c "
+import json, os
+with open(os.environ['OW_MAP']) as f:
+    m = json.load(f)
+project_dir = os.environ['OW_PROJECT']
+sid = m.get(project_dir, '')
+if not sid:
+    for k, v in sorted(m.items(), key=lambda x: -len(x[0])):
+        if project_dir.startswith(k):
+            sid = v
+            break
+if sid:
+    base = os.path.expanduser('~/.codex/sessions')
+    matches = []
+    for root, _, files in os.walk(base):
+        for name in files:
+            if name.endswith('.jsonl') and sid in name:
+                path = os.path.join(root, name)
+                matches.append((os.path.getmtime(path), path))
+    if matches:
+        print(f'{sid} {sorted(matches)[-1][1]}')
+" 2>/dev/null)
+
+    if [ -n "$RESULT" ]; then
+        echo "$RESULT"
+        exit 0
+    fi
 fi
 
 # Method 2: Fallback — find JSONL by scanning project dirs (only if exactly one match)

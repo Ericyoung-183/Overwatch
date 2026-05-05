@@ -61,6 +61,10 @@ def _call_summary_model(existing_summary: str, new_text: str) -> str:
 
     Falls back to truncation if the API call fails.
     """
+    from config import REVIEW_BACKEND
+    if REVIEW_BACKEND == "codex_exec":
+        return _truncate_summary(existing_summary, new_text)
+
     from api_client import call_claude
 
     system_prompt = (

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Overwatch main engine: parse transcript -> manage context -> call Claude API -> write review."""
+"""Overwatch main engine: parse transcript -> manage context -> run reviewer -> write review."""
 import argparse
 import fcntl
 import json
@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
     REVIEW_MODEL,
+    REVIEW_BACKEND,
     API_FORMAT,
     REVIEWS_DIR,
     CURRENT_REVIEW_LINK,
@@ -105,8 +106,8 @@ def _read_user_context(project_cwd: str) -> str:
     """Auto-discover and read user's memory files for personalized review context.
 
     Reads (if they exist):
-    - Global CLAUDE.md (~/.claude/CLAUDE.md) — user's engineering standards
-    - Project CLAUDE.md (project/.claude/CLAUDE.md) — project context
+    - Global AGENTS.md / CLAUDE.md — user's engineering standards
+    - Project AGENTS.md / CLAUDE.md — project context
     - Project memory feedback files (feedback_*.md) — lessons learned
 
     Returns formatted context string, or empty if nothing found.
@@ -118,31 +119,38 @@ def _read_user_context(project_cwd: str) -> str:
     sections = []
     extra_paths = os.environ.get("OVERWATCH_CONTEXT_PATHS", "")
 
-    # 1. Global CLAUDE.md (L2 — user's engineering standards)
-    global_claude = os.path.expanduser("~/.claude/CLAUDE.md")
-    if os.path.isfile(global_claude):
+    # 1. Global user standards. Prefer Codex AGENTS.md, keep Claude Code as fallback context.
+    for label, global_path in (
+        ("Codex User Engineering Standards", os.path.expanduser("~/.codex/AGENTS.md")),
+        ("Claude Code User Engineering Standards", os.path.expanduser("~/.claude/CLAUDE.md")),
+    ):
+        if not os.path.isfile(global_path):
+            continue
         try:
-            with open(global_claude, "r", encoding="utf-8") as f:
+            with open(global_path, "r", encoding="utf-8") as f:
                 content = f.read()
             if content.strip():
-                # Truncate to keep context manageable
                 if len(content) > 3000:
                     content = content[:3000] + "\n\n... [truncated]"
-                sections.append(f"### User Engineering Standards\n{content}")
+                sections.append(f"### {label}\n{content}")
         except Exception:
             pass
 
-    # 2. Project CLAUDE.md (L3 — project context)
+    # 2. Project context. Prefer Codex AGENTS.md, keep Claude Code project context too.
     if project_cwd:
-        project_claude = os.path.join(project_cwd, ".claude", "CLAUDE.md")
-        if os.path.isfile(project_claude):
+        for label, project_path in (
+            ("Codex Project Context", os.path.join(project_cwd, "AGENTS.md")),
+            ("Claude Code Project Context", os.path.join(project_cwd, ".claude", "CLAUDE.md")),
+        ):
+            if not os.path.isfile(project_path):
+                continue
             try:
-                with open(project_claude, "r", encoding="utf-8") as f:
+                with open(project_path, "r", encoding="utf-8") as f:
                     content = f.read()
                 if content.strip():
                     if len(content) > 2000:
                         content = content[:2000] + "\n\n... [truncated]"
-                    sections.append(f"### Project Context\n{content}")
+                    sections.append(f"### {label}\n{content}")
             except Exception:
                 pass
 
@@ -358,8 +366,11 @@ def run(session_id: str, transcript_path: str, force: bool = False, project_cwd:
 def _run_inner(session_id: str, transcript_path: str, force: bool = False, project_cwd: str = ""):
     """Core review logic."""
     from config import API_AUTH_TOKEN
-    if not API_AUTH_TOKEN:
+    if REVIEW_BACKEND == "api" and not API_AUTH_TOKEN:
         log("config_error", session_id=session_id, error="ANTHROPIC_API_KEY not set")
+        return
+    if REVIEW_BACKEND not in {"api", "codex_exec"}:
+        log("config_error", session_id=session_id, error=f"Unknown OVERWATCH_BACKEND={REVIEW_BACKEND}")
         return
 
     state = load_state(session_id)
@@ -402,10 +413,12 @@ def _run_inner(session_id: str, transcript_path: str, force: bool = False, proje
     system_prompt, user_message = build_review_prompt(context_text, review_number, last_review, include_tools=use_tools)
 
     started = time.time()
-    log("api_call_start", session_id=session_id, review=review_number, model=REVIEW_MODEL)
+    log("review_call_start", session_id=session_id, review=review_number, backend=REVIEW_BACKEND, model=REVIEW_MODEL)
 
-    # Use agentic review (with tools) when project_cwd is available
-    if project_cwd:
+    if REVIEW_BACKEND == "codex_exec":
+        from codex_exec_client import call_codex_exec
+        review_text = call_codex_exec(system_prompt, user_message, project_cwd=project_cwd)
+    elif project_cwd:
         from tools import TOOL_DEFINITIONS, execute_tool
         review_text = call_claude_with_tools(
             system_prompt, user_message,
@@ -421,7 +434,7 @@ def _run_inner(session_id: str, transcript_path: str, force: bool = False, proje
         failed_state = _mark_review_failure(updated_state, review_text)
         save_state(session_id, failed_state)
         log(
-            "api_call_failed",
+            "review_call_failed",
             session_id=session_id,
             review=review_number,
             latency_ms=latency_ms,

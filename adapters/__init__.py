@@ -1,7 +1,7 @@
 """Overwatch adapter interface.
 
 An adapter converts tool-specific session transcripts into a common Turn list.
-Currently supported: claude_code (Claude Code JSONL format).
+Currently supported: claude_code (Claude Code JSONL format), codex (Codex Desktop JSONL format).
 """
 from dataclasses import dataclass, field
 
@@ -30,7 +30,10 @@ def get_adapter(name: str = "claude_code"):
     if name == "claude_code":
         from adapters.claude_code import parse
         return parse
-    raise ValueError(f"Unknown adapter: {name}. Available: claude_code")
+    if name in ("codex", "codex_desktop"):
+        from adapters.codex import parse
+        return parse
+    raise ValueError(f"Unknown adapter: {name}. Available: claude_code, codex")
 
 
 def format_turn(turn: Turn) -> str:

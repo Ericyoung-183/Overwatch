@@ -18,19 +18,19 @@ You <-> Claude Code (Builder)     Overwatch (Independent Reviewer)
      |  Builder presents & discusses      |
 ```
 
-Overwatch hooks into Claude Code's event system. After every N user turns (default: 10), it:
+Overwatch hooks into Claude Code or Codex Desktop's event system. After every N user turns (default: 10), it:
 
 1. **Parses** the full session JSONL transcript
 2. **Builds context** using a rolling summary (for older turns) + verbatim recent window
-3. **Calls Claude API** with its own independent review prompt
+3. **Runs the configured review backend** with its own independent review prompt
 4. **Injects** the review into your next conversation turn
 
 The Builder then presents the review and responds to each point.
 
 ### Prerequisites
 
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed and working
-- An Anthropic API key — Overwatch calls the Claude API independently for reviews, separate from Claude Code's own authentication:
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or Codex installed and working
+- For the default Claude/API backend, an Anthropic API key — Overwatch calls the Claude API independently for reviews, separate from Claude Code's own authentication:
   1. Create an account at [console.anthropic.com](https://console.anthropic.com/) (this is separate from your Claude Pro/Max subscription)
   2. Go to [Settings > API Keys](https://console.anthropic.com/settings/keys) and create a key (copy it immediately — it's only shown once)
   3. Add to your shell profile:
@@ -43,6 +43,8 @@ The Builder then presents the review and responds to each point.
   New accounts may receive free credit — see [console.anthropic.com](https://console.anthropic.com/) for current pricing details.
 
 > If your environment already provides `ANTHROPIC_AUTH_TOKEN`, Overwatch will use it automatically — no additional setup needed.
+
+For Codex Desktop, Overwatch can use `OVERWATCH_BACKEND=codex_exec` instead. This runs `codex exec` with the user's existing Codex login, so no separate OpenAI API key is required.
 
 ## Quick Start
 
@@ -109,7 +111,8 @@ Edit `config.py`:
 ```python
 TURN_THRESHOLD = 10        # Auto-review every N turns
 RECENT_WINDOW_SIZE = 10    # Keep last N exchanges verbatim
-REVIEW_MODEL = "claude-sonnet-4-20250514"  # Model for reviews
+REVIEW_BACKEND = "api"     # "api" or "codex_exec"
+REVIEW_MODEL = "claude-sonnet-4-20250514"  # Model for reviews; gpt-5.5 for codex_exec
 SUMMARY_MODEL = "claude-haiku-4-5-20251001"  # Model for summaries
 TRIGGER_KEYWORDS = ["overwatch", "second opinion", "第二意见"]  # Manual trigger words
 ```
@@ -118,6 +121,9 @@ TRIGGER_KEYWORDS = ["overwatch", "second opinion", "第二意见"]  # Manual tri
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
+| `OVERWATCH_BACKEND` | Review backend: `api` or `codex_exec` | `api` |
+| `OVERWATCH_CODEX_COMMAND` | Codex executable for `codex_exec` backend | `/Applications/Codex.app/Contents/Resources/codex` if present |
+| `OVERWATCH_CODEX_EXEC_TIMEOUT` | Timeout for nested Codex review | `API_TIMEOUT` |
 | `ANTHROPIC_API_KEY` | API authentication | (required) |
 | `ANTHROPIC_BASE_URL` | API endpoint | `https://api.anthropic.com` |
 | `OVERWATCH_REVIEW_MODEL` | Override review model | from `ANTHROPIC_MODEL` |
@@ -131,6 +137,7 @@ overwatch/
 ├── overwatch.py           # Main engine: orchestrates the review pipeline
 ├── config.py              # All configuration in one place
 ├── api_client.py          # Claude API client (zero external dependencies)
+├── codex_exec_client.py   # Codex exec backend (uses existing Codex login)
 ├── context_manager.py     # Rolling summary + recent window management
 ├── prompts.py             # Review framework and prompt templates
 ├── adapters/

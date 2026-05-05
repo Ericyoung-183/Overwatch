@@ -45,6 +45,7 @@ MAX_GIT_DIFF_CHARS = 8000  # Git diff truncation limit for review context
 MAX_USER_CONTEXT_CHARS = 8000  # Total user memory context limit (L2+L3+L4)
 
 # --- API ---
+REVIEW_BACKEND = _clean_env(os.environ.get("OVERWATCH_BACKEND", "api"), "api").lower()
 API_BASE_URL = _clean_env(
     os.environ.get("OVERWATCH_BASE_URL", os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")),
     "https://api.anthropic.com",
@@ -62,9 +63,10 @@ else:
     # Auto-detect: localhost/127.0.0.1 → anthropic (likely proxy), api.anthropic.com → anthropic
     _is_anthropic = any(h in API_BASE_URL for h in ("anthropic.com", "localhost", "127.0.0.1"))
     API_FORMAT = "anthropic" if _is_anthropic else "openai"
+_default_review_model = "gpt-5.5" if REVIEW_BACKEND == "codex_exec" else "claude-sonnet-4-20250514"
 REVIEW_MODEL = _clean_model_id(_clean_env(
-    os.environ.get("OVERWATCH_REVIEW_MODEL", os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")),
-    "claude-sonnet-4-20250514",
+    os.environ.get("OVERWATCH_REVIEW_MODEL", os.environ.get("ANTHROPIC_MODEL", _default_review_model)),
+    _default_review_model,
 ))
 SUMMARY_MODEL = _clean_model_id(_clean_env(
     os.environ.get("OVERWATCH_SUMMARY_MODEL", os.environ.get("ANTHROPIC_DEFAULT_HAIKU_MODEL", "claude-haiku-4-5-20251001")),
@@ -81,13 +83,20 @@ API_RETRY_BASE_DELAY = float(_clean_env(os.environ.get("OVERWATCH_API_RETRY_BASE
 API_RETRY_MAX_DELAY = float(_clean_env(os.environ.get("OVERWATCH_API_RETRY_MAX_DELAY", "8"), "8"))
 DEBUG_RESPONSE_PREVIEW_CHARS = int(_clean_env(os.environ.get("OVERWATCH_DEBUG_RESPONSE_PREVIEW_CHARS", "1200"), "1200"))
 
+# --- Codex exec backend ---
+_default_codex_command = "/Applications/Codex.app/Contents/Resources/codex"
+if not os.path.exists(_default_codex_command):
+    _default_codex_command = "codex"
+CODEX_COMMAND = _clean_env(os.environ.get("OVERWATCH_CODEX_COMMAND", _default_codex_command), _default_codex_command)
+CODEX_EXEC_TIMEOUT = int(_clean_env(os.environ.get("OVERWATCH_CODEX_EXEC_TIMEOUT", str(API_TIMEOUT)), str(API_TIMEOUT)))
+
 # --- Review Validation / Failure Backoff ---
 MIN_REVIEW_CHARS = int(_clean_env(os.environ.get("OVERWATCH_MIN_REVIEW_CHARS", "80"), "80"))
 REVIEW_FAILURE_COOLDOWN_SECONDS = int(_clean_env(os.environ.get("OVERWATCH_REVIEW_FAILURE_COOLDOWN_SECONDS", "120"), "120"))
 REVIEW_MAX_COOLDOWN_SECONDS = int(_clean_env(os.environ.get("OVERWATCH_REVIEW_MAX_COOLDOWN_SECONDS", "600"), "600"))
 
 # --- Transcript Adapter ---
-ADAPTER = "claude_code"  # Which adapter to use for parsing session transcripts
+ADAPTER = os.environ.get("OVERWATCH_ADAPTER", "claude_code")  # Transcript adapter: claude_code or codex
 
 # --- Session Metadata ---
 # Claude Code stores projects under this base directory.
