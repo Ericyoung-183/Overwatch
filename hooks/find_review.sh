@@ -32,8 +32,16 @@ print(sid)
     fi
 fi
 
-# Method 2: Fallback — _current.md symlink
+# Method 2: Fallback — project-scoped current review symlink.
+PROJECT_NAME="$(basename "${PROJECT_DIR%/}")"
+PROJECT_FALLBACK="${OVERWATCH_DIR}/reviews/_current_${PROJECT_NAME}.md"
+if [ -f "$PROJECT_FALLBACK" ]; then
+    echo "$PROJECT_FALLBACK"
+    exit 0
+fi
+
+# Method 3: Last resort — global _current.md only if its metadata matches this project.
 FALLBACK="${OVERWATCH_DIR}/reviews/_current.md"
-if [ -f "$FALLBACK" ]; then
+if [ -f "$FALLBACK" ] && head -n 1 "$FALLBACK" 2>/dev/null | grep -qF "project: ${PROJECT_DIR} "; then
     echo "$FALLBACK"
 fi
