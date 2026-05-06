@@ -22,11 +22,17 @@ REQUIRED_PROTOCOL_PHRASES = [
     "no rewriting, omitting, or merging",
     "separator line",
     "For each Issue and Recommendation",
+    "Persistence is mandatory unless",
+    "canonical TODO/backlog",
+    "If no project backlog exists",
+    "cite the exact file path",
+    "Do not treat every Recommendation as memory by default",
     "fix now",
     "persist a TODO/backlog entry",
     "state why it is deferred",
     "[LESSON]",
     "save it to project memory",
+    "durable operating rule",
     "Clean up the trigger file",
 ]
 

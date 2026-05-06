@@ -11,6 +11,10 @@ REVIEW_RESPONSE_PROTOCOL = """Review response protocol:
   - fix now and report the changed files plus verification evidence;
   - persist a TODO/backlog entry with owner/timeline or a concrete next checkpoint;
   - state why it is deferred, including the risk and the condition to revisit it.
+- Persistence is mandatory unless the item is fixed now or explicitly rejected as incorrect.
+- Persist unresolved Issues and Recommendations to the current project's canonical TODO/backlog, and cite the exact file path in the response.
+- If no project backlog exists, create or update a project memory TODO/feedback entry instead, and cite the exact file path.
+- Do not treat every Recommendation as memory by default; memory is required for [LESSON] items and for recommendations that define a durable operating rule.
 - If the review contains a [LESSON], save it to project memory before continuing.
 - Clean up the trigger file after presenting the review.
 - Do not continue the user's current request until this review handling is complete."""
