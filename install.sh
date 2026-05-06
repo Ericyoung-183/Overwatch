@@ -147,8 +147,24 @@ CLAUDE_MD="$CC_DIR/CLAUDE.md"
 if [ ! -f "$SNIPPET_FILE" ]; then
     echo -e "${YELLOW}Warning: claude_md_snippet.md not found, skipping CLAUDE.md setup.${NC}"
 else
-    # Replace {{OVERWATCH_DIR}} placeholder with actual path
-    SNIPPET=$(sed "s|{{OVERWATCH_DIR}}|$OVERWATCH_DIR|g" "$SNIPPET_FILE")
+    # Replace placeholders with current install path and the shared response protocol.
+    SNIPPET=$(OVERWATCH_DIR="$OVERWATCH_DIR" python3 - <<'PY'
+import os
+import sys
+
+overwatch_dir = os.environ["OVERWATCH_DIR"]
+sys.path.insert(0, overwatch_dir)
+from response_protocol import REVIEW_RESPONSE_PROTOCOL
+
+snippet_file = os.path.join(overwatch_dir, "claude_md_snippet.md")
+with open(snippet_file, encoding="utf-8") as f:
+    snippet = f.read()
+
+snippet = snippet.replace("{{OVERWATCH_DIR}}", overwatch_dir)
+snippet = snippet.replace("{{REVIEW_RESPONSE_PROTOCOL}}", REVIEW_RESPONSE_PROTOCOL)
+print(snippet, end="")
+PY
+)
 
     # Create CLAUDE.md if it doesn't exist
     if [ ! -f "$CLAUDE_MD" ]; then

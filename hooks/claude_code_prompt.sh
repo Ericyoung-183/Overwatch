@@ -35,8 +35,10 @@ if [ -n "$SESSION_ID" ] && [ -f "$PENDING_FILE" ]; then
     # Primary: inject review content via additionalContext (reaches AI context)
     # Fallback: write trigger file for environments without additionalContext support
     OUTPUT=$(OW_STATE="$STATE_DIR" OW_PENDING="$PENDING_FILE" python3 -c "
-import json, os
+import json, os, sys
 state_dir = os.environ['OW_STATE']
+sys.path.insert(0, os.path.dirname(state_dir))
+from response_protocol import build_auto_review_context
 pending = json.load(open(os.environ['OW_PENDING']))
 review_path = pending['review_path']
 session_id = pending.get('session_id', '')
@@ -54,15 +56,18 @@ except Exception:
     content = '[Overwatch] Review file not found: ' + review_path
 
 # Truncate to stay within additionalContext limit (10k chars)
-if len(content) > 9500:
-    content = content[:9500] + '\n\n... [truncated]'
+if len(content) > 8500:
+    content = content[:8500] + '\n\n... [truncated]'
 
 output = {
     'continue': True,
     'systemMessage': '[Overwatch] Auto-review delivered.',
     'hookSpecificOutput': {
         'hookEventName': 'UserPromptSubmit',
-        'additionalContext': '[Overwatch Auto-Review] Present this review verbatim, then respond point by point.\n\n' + content
+        'additionalContext': build_auto_review_context(
+            content,
+            cleanup_command='rm -f {dir}/latest_trigger.json'.format(dir=state_dir),
+        )
     }
 }
 print(json.dumps(output))
@@ -96,12 +101,14 @@ CWD=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print
 # Primary: inject trigger info via additionalContext (reaches AI context)
 # Fallback: write trigger file for environments without additionalContext support
 OUTPUT=$(OW_STATE="$STATE_DIR" OW_SID="$SESSION_ID" OW_TRANSCRIPT="$TRANSCRIPT" OW_CWD="$CWD" OW_DIR="$OVERWATCH_DIR" python3 -c "
-import json, os
+import json, os, sys
 sid = os.environ['OW_SID']
 transcript = os.environ['OW_TRANSCRIPT']
 cwd = os.environ['OW_CWD']
 ow_dir = os.environ['OW_DIR']
 state_dir = os.environ['OW_STATE']
+sys.path.insert(0, ow_dir)
+from response_protocol import build_manual_trigger_context
 
 # Write trigger file as fallback
 trigger = {
@@ -115,13 +122,14 @@ with open(os.path.join(state_dir, 'latest_trigger.json'), 'w') as f:
     json.dump(trigger, f)
 
 # Inject review instructions via additionalContext
-context = (
-    '[Overwatch Manual Trigger] Run this review now:\n'
-    'python3 {dir}/overwatch.py --session-id \"{sid}\" '
-    '--transcript \"{transcript}\" --cwd \"{cwd}\" --force 2>&1\n'
-    'Then read: bash {dir}/hooks/find_review.sh \"{cwd}\"\n'
-    'Present the full review verbatim, then respond point by point.'
-).format(dir=ow_dir, sid=sid, transcript=transcript, cwd=cwd)
+context = build_manual_trigger_context(
+    review_command=(
+        'python3 {dir}/overwatch.py --session-id \"{sid}\" --transcript \"{transcript}\" '
+        '--cwd \"{cwd}\" --force 2>&1'
+    ).format(dir=ow_dir, sid=sid, transcript=transcript, cwd=cwd),
+    find_review_command='bash {dir}/hooks/find_review.sh \"{cwd}\"'.format(dir=ow_dir, cwd=cwd),
+    cleanup_command='rm -f {dir}/state/latest_trigger.json'.format(dir=ow_dir),
+)
 
 output = {
     'continue': True,

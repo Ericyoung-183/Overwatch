@@ -10,7 +10,7 @@ An independent AI reviewer that monitors your coding sessions and provides perio
 - **Manual triggers**: User sends "overwatch", "second opinion", or "第二意见" → instructions arrive as `<system-reminder>` containing `[Overwatch Manual Trigger]` with the command to run.
 
 **When you receive an Overwatch review** (via any delivery method):
-- You MUST: **Present the full review text verbatim (no rewriting, omitting, or merging) -> separator line -> respond to each point with your judgment or action plan**
+{{REVIEW_RESPONSE_PROTOCOL}}
 - Auto-review results must also be **proactively presented and responded to** -- handle the review before continuing the user's current request
 - **Do NOT** generate your own review to substitute for Overwatch output
 - **`[LESSON]` tag rule**: If the review contains `[LESSON]` tags, you MUST save that lesson as project memory (feedback type). This is mandatory, not a suggestion. Follow your own memory management rules for storage location and scope. If no specific memory rules are configured, default to creating a feedback file in the current project's `memory/` directory.
