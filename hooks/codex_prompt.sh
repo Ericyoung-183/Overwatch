@@ -106,6 +106,39 @@ print('true' if prompt in [k.lower() for k in TRIGGER_KEYWORDS] else 'false')
 " 2>/dev/null || echo "false")
 
 if [ "$MATCHED" != "true" ]; then
+    SAFE_SESSION_ID=$(printf '%s' "$SESSION_ID" | tr -c 'A-Za-z0-9_.-' '_')
+    STOP_SAYS_FILE="/Users/eric/Desktop/AI杂货/stop-says/state/last_stop_says_${SAFE_SESSION_ID}.json"
+    if [ -n "$SESSION_ID" ] && [ -f "$STOP_SAYS_FILE" ]; then
+        OUTPUT=$(OW_STOP_SAYS_FILE="$STOP_SAYS_FILE" python3 -c "
+import json
+import os
+
+path = os.environ['OW_STOP_SAYS_FILE']
+with open(path, encoding='utf-8') as f:
+    payload = json.load(f)
+message = str(payload.get('systemMessage', '') or '').strip()
+if not message:
+    raise SystemExit(1)
+context = (
+    '<system-reminder>\\n'
+    '[Stop Says Previous Turn]\\n'
+    'The previous Codex Stop hook status may not have been visible in the UI. '
+    'Before answering the user, show this status in one short line exactly once:\\n'
+    f'{message}\\n'
+    '</system-reminder>'
+)
+print(json.dumps({
+    'continue': True,
+    'systemMessage': '[Stop Says] Previous turn status delivered.',
+    'hookSpecificOutput': {
+        'hookEventName': 'UserPromptSubmit',
+        'additionalContext': context,
+    },
+}, ensure_ascii=False))
+" 2>/dev/null || echo '{"continue": true}')
+        rm -f "$STOP_SAYS_FILE" 2>/dev/null || true
+        exit 0
+    fi
     exit 0
 fi
 
