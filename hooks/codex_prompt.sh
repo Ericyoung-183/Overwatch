@@ -17,6 +17,7 @@ INPUT=$(cat)
 mkdir -p "$STATE_DIR"
 
 SESSION_ID=$(echo "$INPUT" | python3 -c "import os,sys,json; d=json.load(sys.stdin); print(d.get('session_id') or os.environ.get('CODEX_THREAD_ID',''))" 2>/dev/null || echo "")
+CWD=$(echo "$INPUT" | python3 -c "import os,sys,json; d=json.load(sys.stdin); print(d.get('cwd') or os.getcwd())" 2>/dev/null || pwd)
 
 find_transcript() {
     OW_SID="$SESSION_ID" python3 - <<'PY'
@@ -39,6 +40,23 @@ PY
 TRANSCRIPT=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('transcript_path',''))" 2>/dev/null || echo "")
 if [ -z "$TRANSCRIPT" ]; then
     TRANSCRIPT=$(find_transcript 2>/dev/null || echo "")
+fi
+
+if [ -n "$SESSION_ID" ] && [ -n "$CWD" ]; then
+    OW_STATE_DIR="$STATE_DIR" OW_CWD="$CWD" OW_SID="$SESSION_ID" python3 -c "
+import json, os, tempfile
+state_dir = os.environ['OW_STATE_DIR']
+map_file = os.path.join(state_dir, 'session_map.json')
+m = {}
+if os.path.exists(map_file):
+    with open(map_file, encoding='utf-8') as f:
+        m = json.load(f)
+m[os.environ['OW_CWD']] = os.environ['OW_SID']
+fd, tmp = tempfile.mkstemp(dir=state_dir, suffix='.tmp')
+with os.fdopen(fd, 'w', encoding='utf-8') as f:
+    json.dump(m, f, ensure_ascii=False, indent=2)
+os.replace(tmp, map_file)
+" 2>/dev/null || true
 fi
 
 PENDING_FILE="${STATE_DIR}/auto_review_pending_${SESSION_ID}.json"
@@ -91,7 +109,6 @@ if [ "$MATCHED" != "true" ]; then
     exit 0
 fi
 
-CWD=$(echo "$INPUT" | python3 -c "import os,sys,json; d=json.load(sys.stdin); print(d.get('cwd') or os.getcwd())" 2>/dev/null || pwd)
 OUTPUT=$(OW_STATE="$STATE_DIR" OW_SID="$SESSION_ID" OW_TRANSCRIPT="$TRANSCRIPT" OW_CWD="$CWD" OW_DIR="$OVERWATCH_DIR" python3 -c "
 import json, os, sys
 sid = os.environ['OW_SID']

@@ -23,6 +23,65 @@ trap cleanup EXIT
 INPUT=$(cat)
 mkdir -p "$STATE_DIR"
 
+write_stop_status() {
+    local status="$1"
+    local reason="$2"
+    local current_turns="${3:-}"
+    local last_reviewed="${4:-}"
+    local review_count="${5:-}"
+    [ -z "${SESSION_ID:-}" ] && return 0
+    OW_STATE_DIR="$STATE_DIR" OW_SID="$SESSION_ID" OW_CWD="${CWD:-}" OW_TRANSCRIPT="${TRANSCRIPT_PATH:-}" \
+    OW_STATUS="$status" OW_REASON="$reason" OW_CURRENT_TURNS="$current_turns" \
+    OW_LAST_REVIEWED="$last_reviewed" OW_REVIEW_COUNT="$review_count" python3 -c "
+import datetime as dt
+import json
+import os
+import sys
+import tempfile
+
+state_dir = os.environ['OW_STATE_DIR']
+sid = os.environ['OW_SID']
+cwd = os.environ.get('OW_CWD', '')
+sys.path.insert(0, os.path.dirname(state_dir))
+try:
+    from config import ALLOWED_PROJECTS
+except Exception:
+    ALLOWED_PROJECTS = []
+
+if not ALLOWED_PROJECTS:
+    scope = 'active/global'
+elif any(cwd.startswith(p) for p in ALLOWED_PROJECTS):
+    scope = 'active/allowed'
+else:
+    scope = 'disabled/project'
+
+def as_int(value):
+    try:
+        return int(value)
+    except Exception:
+        return 0
+
+payload = {
+    'session_id': sid,
+    'cwd': cwd,
+    'transcript_path': os.environ.get('OW_TRANSCRIPT', ''),
+    'status': os.environ['OW_STATUS'],
+    'reason': os.environ['OW_REASON'],
+    'scope': scope,
+    'current_turns': as_int(os.environ.get('OW_CURRENT_TURNS', '')),
+    'last_reviewed_turn': as_int(os.environ.get('OW_LAST_REVIEWED', '')),
+    'review_count': as_int(os.environ.get('OW_REVIEW_COUNT', '')),
+    'updated_at': dt.datetime.now(dt.timezone.utc).isoformat(),
+}
+path = os.path.join(state_dir, f'stop_status_{sid}.json')
+fd, tmp = tempfile.mkstemp(dir=state_dir, suffix='.tmp')
+with os.fdopen(fd, 'w', encoding='utf-8') as f:
+    json.dump(payload, f, ensure_ascii=False, indent=2)
+os.replace(tmp, path)
+" 2>/dev/null || true
+    { echo "[Overwatch Codex Stop] status=$status reason=$reason session=$SESSION_ID" >> "$LOG_FILE"; } 2>/dev/null || true
+}
+
 SESSION_ID=$(echo "$INPUT" | python3 -c "import os,sys,json; d=json.load(sys.stdin); print(d.get('session_id') or os.environ.get('CODEX_THREAD_ID',''))" 2>/dev/null || echo "")
 TRANSCRIPT_PATH=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('transcript_path',''))" 2>/dev/null || echo "")
 CWD=$(echo "$INPUT" | python3 -c "import os,sys,json; d=json.load(sys.stdin); print(d.get('cwd') or os.getcwd())" 2>/dev/null || pwd)
@@ -44,7 +103,11 @@ PY
 )
 fi
 
-if [ -z "$SESSION_ID" ] || [ -z "$TRANSCRIPT_PATH" ]; then
+if [ -z "$SESSION_ID" ]; then
+    exit 0
+fi
+if [ -z "$TRANSCRIPT_PATH" ]; then
+    write_stop_status "skipped" "missing_transcript"
     exit 0
 fi
 
@@ -60,6 +123,7 @@ else:
     print('no')
 " 2>/dev/null || echo "yes")
 if [ "$ALLOWED" = "no" ]; then
+    write_stop_status "skipped" "disallowed_project"
     exit 0
 fi
 
@@ -83,9 +147,11 @@ LOCK_FILE="${STATE_DIR}/${SESSION_ID}.lock"
 if [ -f "$PENDING_FILE" ]; then
     # Keep Stop UI quiet. The prompt hook delivers the review on the next turn,
     # and stop-says summarizes the state in one final status line.
+    write_stop_status "skipped" "pending_review"
     OUTPUT='{"continue": true}'
     exit 0
 elif [ -f "$LOCK_FILE" ]; then
+    write_stop_status "skipped" "review_in_progress"
     OUTPUT='{"continue": true}'
     exit 0
 fi
@@ -111,14 +177,17 @@ EFFECTIVE_MAX=${TURN_MAX:-15}
 EFFECTIVE_MIN=${TURN_MIN:-5}
 
 if [ "$DIFF" -lt "$EFFECTIVE_MIN" ]; then
+    write_stop_status "skipped" "below_min_threshold" "$CURRENT_TURNS" "$LAST_REVIEWED" "$REVIEW_COUNT"
     OUTPUT='{"continue": true}'
     exit 0
 elif [ "$DIFF" -lt "$EFFECTIVE_MAX" ]; then
+    write_stop_status "skipped" "below_max_threshold" "$CURRENT_TURNS" "$LAST_REVIEWED" "$REVIEW_COUNT"
     OUTPUT='{"continue": true}'
     exit 0
 fi
 
 OUTPUT='{"continue": true}'
+write_stop_status "triggered" "review_dispatched" "$CURRENT_TURNS" "$LAST_REVIEWED" "$REVIEW_COUNT"
 { echo "[Overwatch Codex Stop] Dispatching auto review (session=$SESSION_ID)" >> "$LOG_FILE"; } 2>/dev/null || true
 OVERWATCH_ADAPTER=codex OVERWATCH_BACKEND=codex_exec OVERWATCH_REVIEW_MODEL="${OVERWATCH_REVIEW_MODEL:-gpt-5.5}" nohup python3 "$OVERWATCH_PY" \
     --session-id "$SESSION_ID" \

@@ -73,6 +73,31 @@ if sid:
     fi
 fi
 
+# Method 1b: Codex Desktop fallback from the live thread id.
+# This covers sessions where the prompt hook is alive but Stop has not yet
+# written a project mapping.
+if [ -n "${CODEX_THREAD_ID:-}" ]; then
+    RESULT=$(OW_SID="$CODEX_THREAD_ID" python3 -c "
+import os
+sid = os.environ.get('OW_SID', '')
+base = os.path.expanduser('~/.codex/sessions')
+matches = []
+if sid and os.path.isdir(base):
+    for root, _, files in os.walk(base):
+        for name in files:
+            if name.endswith('.jsonl') and sid in name:
+                path = os.path.join(root, name)
+                matches.append((os.path.getmtime(path), path))
+if matches:
+    print(f'{sid} {sorted(matches)[-1][1]}')
+" 2>/dev/null)
+
+    if [ -n "$RESULT" ]; then
+        echo "$RESULT"
+        exit 0
+    fi
+fi
+
 # Method 2: Fallback — find JSONL by scanning project dirs (only if exactly one match)
 OW_DIR="$OVERWATCH_DIR" OW_PROJECT="$PROJECT_DIR" python3 -c "
 import os, sys, json
