@@ -45,7 +45,18 @@ MAX_GIT_DIFF_CHARS = 8000  # Git diff truncation limit for review context
 MAX_USER_CONTEXT_CHARS = 8000  # Total user memory context limit (L2+L3+L4)
 
 # --- API ---
-REVIEW_BACKEND = _clean_env(os.environ.get("OVERWATCH_BACKEND", "api"), "api").lower()
+# Codex Desktop sessions should use the Codex transcript adapter and the
+# codex_exec backend by default, so manual fallback commands do not require a
+# separate Anthropic API key.
+def _is_codex_runtime() -> bool:
+    originator = _clean_env(os.environ.get("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", ""), "").lower()
+    return bool(os.environ.get("CODEX_THREAD_ID")) or "codex" in originator
+
+
+_runtime_default_adapter = "codex" if _is_codex_runtime() else "claude_code"
+ADAPTER = _clean_env(os.environ.get("OVERWATCH_ADAPTER", _runtime_default_adapter), _runtime_default_adapter)
+_default_review_backend = "codex_exec" if ADAPTER == "codex" else "api"
+REVIEW_BACKEND = _clean_env(os.environ.get("OVERWATCH_BACKEND", _default_review_backend), _default_review_backend).lower()
 API_BASE_URL = _clean_env(
     os.environ.get("OVERWATCH_BASE_URL", os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")),
     "https://api.anthropic.com",
@@ -96,7 +107,8 @@ REVIEW_FAILURE_COOLDOWN_SECONDS = int(_clean_env(os.environ.get("OVERWATCH_REVIE
 REVIEW_MAX_COOLDOWN_SECONDS = int(_clean_env(os.environ.get("OVERWATCH_REVIEW_MAX_COOLDOWN_SECONDS", "600"), "600"))
 
 # --- Transcript Adapter ---
-ADAPTER = os.environ.get("OVERWATCH_ADAPTER", "claude_code")  # Transcript adapter: claude_code or codex
+# Transcript adapter: claude_code or codex. The default is runtime-aware; see
+# the API section above where ADAPTER is initialized before backend selection.
 
 # --- Session Metadata ---
 # Claude Code stores projects under this base directory.
