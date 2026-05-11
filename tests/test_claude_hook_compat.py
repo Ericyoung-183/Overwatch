@@ -7,10 +7,12 @@ import json
 import os
 import subprocess
 import tempfile
+import uuid
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+STATE_DIR = ROOT / "state"
 
 
 def test(name: str, condition: bool, detail: str = "") -> None:
@@ -41,6 +43,17 @@ def run_hook(script: str, payload: dict[str, str]) -> dict[str, object]:
         env=without_codex_env(),
     )
     return json.loads(proc.stdout)
+
+
+def read_optional(path: Path) -> str | None:
+    return path.read_text(encoding="utf-8") if path.exists() else None
+
+
+def restore_optional(path: Path, content: str | None) -> None:
+    if content is None:
+        path.unlink(missing_ok=True)
+    else:
+        path.write_text(content, encoding="utf-8")
 
 
 def test_non_codex_config_defaults_are_claude_api() -> None:
@@ -90,20 +103,28 @@ def test_claude_stop_still_uses_system_message_status() -> None:
 
 
 def test_claude_manual_trigger_uses_shared_additional_context_protocol() -> None:
-    response = run_hook(
-        "claude_code_prompt.sh",
-        {
-            "session_id": "claude-compat-manual",
-            "transcript_path": "/tmp/claude-compat.jsonl",
-            "cwd": "/tmp/claude-project",
-            "user_prompt": "overwatch",
-        },
-    )
+    trigger_file = STATE_DIR / "latest_trigger.json"
+    original_trigger = read_optional(trigger_file)
+    sid = "claude-compat-manual-" + uuid.uuid4().hex
+
+    try:
+        response = run_hook(
+            "claude_code_prompt.sh",
+            {
+                "session_id": sid,
+                "transcript_path": "/tmp/claude-compat.jsonl",
+                "cwd": "/tmp/claude-project",
+                "user_prompt": "overwatch",
+            },
+        )
+    finally:
+        restore_optional(trigger_file, original_trigger)
     context = str(response.get("hookSpecificOutput", {}).get("additionalContext", ""))
 
     test("Claude manual trigger delivers additionalContext", "[Overwatch Manual Trigger]" in context, context)
     test("Claude manual trigger uses shared protocol", "Review response protocol:" in context, context)
     test("Claude manual trigger does not force Codex backend", "OVERWATCH_BACKEND=codex_exec" not in context, context)
+    test("Claude manual trigger test restores latest trigger", read_optional(trigger_file) == original_trigger)
 
 
 if __name__ == "__main__":

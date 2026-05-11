@@ -67,7 +67,7 @@ All probes were trivial prompts that completed with `OK`; the point was to compa
 |---|---:|---:|
 | normal user config/hooks | 36.49s | 87.37s |
 | UserPromptSubmit disabled | 35.49s | 58.60s |
-| isolated: `--ephemeral --ignore-user-config --disable codex_hooks --disable plugins --disable memories --disable tool_search` | 5.76s | 29.49s |
+| isolated: `--ephemeral --ignore-user-config --disable hooks --disable plugins --disable memories --disable tool_search` | 5.76s | 29.49s |
 | isolated + `--disable shell_snapshot` | 5.13s | 31.37s |
 
 Interpretation:

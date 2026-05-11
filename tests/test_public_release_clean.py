@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+DEPRECATED_CODEX_HOOK_FEATURE = "codex" + "_hooks"
 BANNED_SUBSTRINGS = [
     "/Users/" + "eric",
     "AI" + "杂货",
@@ -54,6 +55,22 @@ def test_public_files_have_no_eric_local_paths() -> None:
     test("tracked public files avoid Eric-local paths", not offenders, "\n".join(offenders))
 
 
+def test_public_files_avoid_deprecated_codex_hook_feature_name() -> None:
+    offenders: list[str] = []
+    for rel in tracked_files():
+        path = ROOT / rel
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if DEPRECATED_CODEX_HOOK_FEATURE in text:
+            offenders.append(f"{rel}: contains deprecated Codex hook feature name")
+
+    test("tracked public files avoid deprecated Codex hook feature name", not offenders, "\n".join(offenders))
+
+
 def test_release_check_script_exists() -> None:
     path = ROOT / "scripts" / "check_release.sh"
     test("release check script exists", path.exists(), str(path))
@@ -66,5 +83,6 @@ def test_release_check_script_exists() -> None:
 
 if __name__ == "__main__":
     test_public_files_have_no_eric_local_paths()
+    test_public_files_avoid_deprecated_codex_hook_feature_name()
     test_release_check_script_exists()
     print("public release clean tests passed")
