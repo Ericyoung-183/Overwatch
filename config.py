@@ -100,6 +100,7 @@ if not os.path.exists(_default_codex_command):
     _default_codex_command = "codex"
 CODEX_COMMAND = _clean_env(os.environ.get("OVERWATCH_CODEX_COMMAND", _default_codex_command), _default_codex_command)
 CODEX_EXEC_TIMEOUT = int(_clean_env(os.environ.get("OVERWATCH_CODEX_EXEC_TIMEOUT", str(API_TIMEOUT)), str(API_TIMEOUT)))
+CODEX_REASONING_EFFORT = _clean_env(os.environ.get("OVERWATCH_CODEX_REASONING_EFFORT", "xhigh"), "xhigh")
 
 # --- Review Validation / Failure Backoff ---
 MIN_REVIEW_CHARS = int(_clean_env(os.environ.get("OVERWATCH_MIN_REVIEW_CHARS", "80"), "80"))

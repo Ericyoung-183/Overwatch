@@ -4,12 +4,13 @@ This backend uses the user's existing Codex login instead of a separate API key.
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import tempfile
 import uuid
 
-from config import CODEX_COMMAND, CODEX_EXEC_TIMEOUT, REVIEW_MODEL, STATE_DIR
+from config import CODEX_COMMAND, CODEX_EXEC_TIMEOUT, CODEX_REASONING_EFFORT, REVIEW_MODEL, STATE_DIR
 
 
 def build_isolated_review_prompt(system_prompt: str, user_message: str, nonce: str | None = None) -> str:
@@ -60,7 +61,7 @@ def build_codex_exec_command(output_path: str, cwd: str) -> list[str]:
         "--ephemeral",
         "--ignore-user-config",
         "--disable",
-        "codex_hooks",
+        "hooks",
         "--disable",
         "plugins",
         "--disable",
@@ -70,6 +71,8 @@ def build_codex_exec_command(output_path: str, cwd: str) -> list[str]:
         "--skip-git-repo-check",
         "-m",
         REVIEW_MODEL,
+        "-c",
+        "model_reasoning_effort=" + json.dumps(CODEX_REASONING_EFFORT),
         "-C",
         cwd,
         "-s",

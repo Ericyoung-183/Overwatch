@@ -124,10 +124,10 @@ import os
 import shutil
 import sys
 sys.path.insert(0, os.environ["OVERWATCH_DIR"])
-from config import CODEX_COMMAND, REVIEW_MODEL
+from config import CODEX_COMMAND, CODEX_REASONING_EFFORT, REVIEW_MODEL
 cmd = CODEX_COMMAND
 ok = os.path.exists(cmd) or shutil.which(cmd)
-print(f"Codex command: {cmd} | Review model: {REVIEW_MODEL} | {'OK' if ok else 'not found'}")
+print(f"Codex command: {cmd} | Review model: {REVIEW_MODEL} | Reasoning effort: {CODEX_REASONING_EFFORT} | {'OK' if ok else 'not found'}")
 PY
 )
 if [ -n "$CODEX_CHECK" ]; then

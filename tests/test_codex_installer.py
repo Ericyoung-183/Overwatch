@@ -82,6 +82,7 @@ def test_codex_installer_registers_hooks_idempotently() -> None:
     prompt_commands = hook_commands(data, "UserPromptSubmit")
 
     test("installer prints success", "Overwatch installed for Codex" in first, first)
+    test("installer prints Codex reasoning effort", "Reasoning effort: xhigh" in first, first)
     test("installer is idempotent", "already registered" in second, second)
     test("preserves existing stop hook", "/bin/echo existing-stop" in stop_commands, str(stop_commands))
     test("registers codex stop hook once", sum("hooks/codex_stop.sh" in cmd for cmd in stop_commands) == 1, str(stop_commands))

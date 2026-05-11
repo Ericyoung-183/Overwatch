@@ -44,7 +44,7 @@ The Builder then presents the review and responds to each point.
 
 > If your environment already provides `ANTHROPIC_AUTH_TOKEN`, Overwatch will use it automatically — no additional setup needed.
 
-For Codex Desktop or Codex CLI, Overwatch can use `OVERWATCH_BACKEND=codex_exec` instead. This runs `codex exec` with the user's existing Codex login, so no separate OpenAI API key is required. Codex runtimes are detected from Codex environment signals by default; explicit `OVERWATCH_ADAPTER`, `OVERWATCH_BACKEND`, and `OVERWATCH_REVIEW_MODEL` values always win.
+For Codex Desktop or Codex CLI, Overwatch can use `OVERWATCH_BACKEND=codex_exec` instead. This runs `codex exec` with the user's existing Codex login, so no separate OpenAI API key is required. Codex runtimes are detected from Codex environment signals by default; explicit `OVERWATCH_ADAPTER`, `OVERWATCH_BACKEND`, and `OVERWATCH_REVIEW_MODEL` values always win. The Codex exec backend defaults to `model_reasoning_effort="xhigh"` for maximum review depth.
 
 ## Quick Start
 
@@ -135,6 +135,7 @@ TURN_THRESHOLD = 10        # Auto-review every N turns
 RECENT_WINDOW_SIZE = 10    # Keep last N exchanges verbatim
 REVIEW_BACKEND = "api"     # "api" or "codex_exec"; Codex runtimes default to codex_exec
 REVIEW_MODEL = "claude-sonnet-4-20250514"  # Model for reviews; gpt-5.5 for codex_exec
+CODEX_REASONING_EFFORT = "xhigh"  # Highest Codex reasoning effort for codex_exec
 SUMMARY_MODEL = "claude-haiku-4-5-20251001"  # Model for summaries
 TRIGGER_KEYWORDS = ["overwatch", "second opinion", "第二意见"]  # Manual trigger words
 ```
@@ -147,6 +148,7 @@ TRIGGER_KEYWORDS = ["overwatch", "second opinion", "第二意见"]  # Manual tri
 | `OVERWATCH_BACKEND` | Review backend: `api` or `codex_exec` | Runtime-aware (`api`, or `codex_exec` in Codex runtimes) |
 | `OVERWATCH_CODEX_COMMAND` | Codex executable for `codex_exec` backend | `/Applications/Codex.app/Contents/Resources/codex` if present |
 | `OVERWATCH_CODEX_EXEC_TIMEOUT` | Timeout for nested Codex review | `API_TIMEOUT` |
+| `OVERWATCH_CODEX_REASONING_EFFORT` | Codex `model_reasoning_effort` for nested reviews | `xhigh` |
 | `OVERWATCH_CODEX_STATUS_RELAY_DIR` | Optional directory containing Codex status relay files named `last_stop_says_<session>.json` | unset |
 | `OVERWATCH_CODEX_STATUS_RELAY_FILE` | Optional single status relay file for the current Codex session | unset |
 | `ANTHROPIC_API_KEY` | API authentication | (required) |

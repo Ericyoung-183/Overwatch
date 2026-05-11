@@ -42,11 +42,12 @@ def test_codex_command_disables_user_runtime_features() -> None:
 
     test("codex exec uses ephemeral mode", "--ephemeral" in cmd)
     test("codex exec ignores user config", "--ignore-user-config" in cmd)
-    test("codex exec disables hooks", "--disable codex_hooks" in joined)
+    test("codex exec disables hooks", "--disable hooks" in joined)
     test("codex exec disables plugins", "--disable plugins" in joined)
     test("codex exec disables memories", "--disable memories" in joined)
     test("codex exec disables tool search", "--disable tool_search" in joined)
     test("codex exec uses read-only sandbox", "-s read-only" in joined)
+    test("codex exec uses highest reasoning effort", 'model_reasoning_effort="xhigh"' in cmd)
 
 
 if __name__ == "__main__":
