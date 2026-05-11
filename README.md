@@ -213,6 +213,8 @@ Before publishing a GitHub release, run:
 
 This checks public-file hygiene, Claude Code compatibility, Codex compatibility, response-protocol delivery, shell syntax, Python syntax, and whitespace errors. The public Overwatch repository must not depend on personal local paths; local workflow bundles should inject optional behavior through environment variables such as `OVERWATCH_CODEX_STATUS_RELAY_DIR`.
 
+For Codex, the release gate installs Overwatch into a temporary Codex hooks file, then executes the installed Stop and UserPromptSubmit commands with synthetic Codex hook payloads. This proves the installer output and hook command contract without touching a user's live Codex config. A live Codex Desktop or Codex CLI turn remains a manual release check when the Codex runtime does not expose a standalone hook trigger command.
+
 ## Comparison
 
 | Feature | Overwatch | CodeRabbit | gossipcat | agent-review | saguaro |

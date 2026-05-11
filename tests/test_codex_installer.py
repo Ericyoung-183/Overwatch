@@ -105,6 +105,7 @@ def test_codex_installer_can_configure_status_relay_dir() -> None:
 def test_release_check_runs_codex_installer_tests() -> None:
     text = (ROOT / "scripts" / "check_release.sh").read_text(encoding="utf-8")
     test("release check runs codex installer test", "test_codex_installer.py" in text)
+    test("release check runs codex installer runtime smoke", "test_codex_installer_runtime_smoke.py" in text)
     test("release check syntax-checks codex installer", "install_codex.sh" in text)
 
 
