@@ -12,7 +12,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STATE_DIR = ROOT / "state"
-STOP_SAYS_STATE_DIR = ROOT.parent / "stop-says" / "state"
 
 
 def test(name: str, condition: bool, detail: str = "") -> None:
@@ -109,20 +108,20 @@ def test_stop_hook_records_skip_reason_when_transcript_missing() -> None:
 def test_prompt_hook_surfaces_previous_stop_says_once() -> None:
     sid = "codex-observability-stop-says"
     cwd = "/tmp/codex-observability-project"
-    stop_file = STOP_SAYS_STATE_DIR / f"last_stop_says_{sid}.json"
-    STOP_SAYS_STATE_DIR.mkdir(parents=True, exist_ok=True)
-    original = stop_file.read_text(encoding="utf-8") if stop_file.exists() else ""
-    stop_file.write_text(
-        json.dumps(
-            {
-                "continue": True,
-                "systemMessage": "Stop Says TEST | Overwatch: active/global | DevGate: clean/no changes",
-            }
-        ),
-        encoding="utf-8",
-    )
+    with tempfile.TemporaryDirectory() as tmp:
+        relay_dir = Path(tmp) / "status-relay"
+        relay_dir.mkdir()
+        stop_file = relay_dir / f"last_stop_says_{sid}.json"
+        stop_file.write_text(
+            json.dumps(
+                {
+                    "continue": True,
+                    "systemMessage": "Stop Says TEST | Overwatch: active/global | DevGate: clean/no changes",
+                }
+            ),
+            encoding="utf-8",
+        )
 
-    try:
         response = run_hook(
             "codex_prompt.sh",
             {
@@ -131,16 +130,18 @@ def test_prompt_hook_surfaces_previous_stop_says_once() -> None:
                 "cwd": cwd,
                 "user_prompt": "normal message",
             },
+            env={"OVERWATCH_CODEX_STATUS_RELAY_DIR": str(relay_dir)},
         )
         context = str(response.get("hookSpecificOutput", {}).get("additionalContext", ""))
         test("prompt hook surfaces previous Stop Says", "[Stop Says Previous Turn]" in context, context)
         test("prompt hook includes Stop Says message", "Stop Says TEST" in context, context)
         test("prompt hook consumes previous Stop Says", not stop_file.exists(), "status file still exists")
-    finally:
-        if original:
-            stop_file.write_text(original, encoding="utf-8")
-        else:
-            stop_file.unlink(missing_ok=True)
+
+
+def test_codex_prompt_has_no_eric_local_status_path() -> None:
+    text = (ROOT / "hooks" / "codex_prompt.sh").read_text(encoding="utf-8")
+    test("codex prompt uses configurable status relay", "OVERWATCH_CODEX_STATUS_RELAY_DIR" in text)
+    test("codex prompt does not hardcode Eric status path", "/Users/" + "eric" not in text, "hardcoded user path found")
 
 
 if __name__ == "__main__":
@@ -148,4 +149,5 @@ if __name__ == "__main__":
     test_prompt_hook_updates_session_map()
     test_stop_hook_records_skip_reason_when_transcript_missing()
     test_prompt_hook_surfaces_previous_stop_says_once()
+    test_codex_prompt_has_no_eric_local_status_path()
     print("codex hook observability tests passed")

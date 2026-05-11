@@ -44,7 +44,7 @@ The Builder then presents the review and responds to each point.
 
 > If your environment already provides `ANTHROPIC_AUTH_TOKEN`, Overwatch will use it automatically — no additional setup needed.
 
-For Codex Desktop, Overwatch can use `OVERWATCH_BACKEND=codex_exec` instead. This runs `codex exec` with the user's existing Codex login, so no separate OpenAI API key is required.
+For Codex Desktop or Codex CLI, Overwatch can use `OVERWATCH_BACKEND=codex_exec` instead. This runs `codex exec` with the user's existing Codex login, so no separate OpenAI API key is required. Codex runtimes are detected from Codex environment signals by default; explicit `OVERWATCH_ADAPTER`, `OVERWATCH_BACKEND`, and `OVERWATCH_REVIEW_MODEL` values always win.
 
 ## Quick Start
 
@@ -111,7 +111,7 @@ Edit `config.py`:
 ```python
 TURN_THRESHOLD = 10        # Auto-review every N turns
 RECENT_WINDOW_SIZE = 10    # Keep last N exchanges verbatim
-REVIEW_BACKEND = "api"     # "api" or "codex_exec"
+REVIEW_BACKEND = "api"     # "api" or "codex_exec"; Codex runtimes default to codex_exec
 REVIEW_MODEL = "claude-sonnet-4-20250514"  # Model for reviews; gpt-5.5 for codex_exec
 SUMMARY_MODEL = "claude-haiku-4-5-20251001"  # Model for summaries
 TRIGGER_KEYWORDS = ["overwatch", "second opinion", "第二意见"]  # Manual trigger words
@@ -121,9 +121,12 @@ TRIGGER_KEYWORDS = ["overwatch", "second opinion", "第二意见"]  # Manual tri
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `OVERWATCH_BACKEND` | Review backend: `api` or `codex_exec` | `api` |
+| `OVERWATCH_ADAPTER` | Transcript adapter: `claude_code` or `codex` | Runtime-aware (`claude_code`, or `codex` in Codex runtimes) |
+| `OVERWATCH_BACKEND` | Review backend: `api` or `codex_exec` | Runtime-aware (`api`, or `codex_exec` in Codex runtimes) |
 | `OVERWATCH_CODEX_COMMAND` | Codex executable for `codex_exec` backend | `/Applications/Codex.app/Contents/Resources/codex` if present |
 | `OVERWATCH_CODEX_EXEC_TIMEOUT` | Timeout for nested Codex review | `API_TIMEOUT` |
+| `OVERWATCH_CODEX_STATUS_RELAY_DIR` | Optional directory containing Codex status relay files named `last_stop_says_<session>.json` | unset |
+| `OVERWATCH_CODEX_STATUS_RELAY_FILE` | Optional single status relay file for the current Codex session | unset |
 | `ANTHROPIC_API_KEY` | API authentication | (required) |
 | `ANTHROPIC_BASE_URL` | API endpoint | `https://api.anthropic.com` |
 | `OVERWATCH_REVIEW_MODEL` | Override review model | from `ANTHROPIC_MODEL` |
@@ -142,12 +145,17 @@ overwatch/
 ├── prompts.py             # Review framework and prompt templates
 ├── adapters/
 │   ├── __init__.py        # Adapter interface (Turn dataclass)
-│   └── claude_code.py     # Claude Code JSONL transcript parser
+│   ├── claude_code.py     # Claude Code JSONL transcript parser
+│   └── codex.py           # Codex Desktop/CLI JSONL transcript parser
 ├── hooks/
 │   ├── claude_code_stop.sh     # Stop hook (auto-trigger)
 │   ├── claude_code_prompt.sh   # UserPromptSubmit hook (manual trigger)
+│   ├── codex_stop.sh           # Codex Stop hook
+│   ├── codex_prompt.sh         # Codex UserPromptSubmit hook
 │   ├── find_session.sh         # Session discovery
 │   └── find_review.sh          # Review file discovery
+├── scripts/
+│   └── check_release.sh        # Public release compatibility checks
 ├── install.sh             # One-command setup
 ├── uninstall.sh           # Clean removal
 ├── reviews/               # Review output (created at runtime)
@@ -160,6 +168,7 @@ overwatch/
 - **Adapter pattern**: Transcript parsing is pluggable. Add support for Cursor, Copilot, etc. by implementing a new adapter.
 - **Non-blocking hooks**: Stop hook always returns `{"continue": true}` within 5 seconds. Reviews run asynchronously.
 - **File-based state**: No database. State is JSON files in `state/`. Reviews are Markdown in `reviews/`.
+- **Runtime separation**: Claude Code keeps the Claude/API default path. Codex app/CLI can use the Codex adapter plus `codex_exec` backend without changing Claude defaults.
 
 ## Custom Adapters
 
@@ -170,6 +179,16 @@ To add support for a new AI coding tool:
 3. Write hook scripts for your tool's extension system (equivalent to `hooks/claude_code_*.sh`)
 
 See `adapters/claude_code.py` for reference implementation.
+
+## Release Checks
+
+Before publishing a GitHub release, run:
+
+```bash
+./scripts/check_release.sh
+```
+
+This checks public-file hygiene, Claude Code compatibility, Codex compatibility, response-protocol delivery, shell syntax, Python syntax, and whitespace errors. The public Overwatch repository must not depend on personal local paths; local workflow bundles should inject optional behavior through environment variables such as `OVERWATCH_CODEX_STATUS_RELAY_DIR`.
 
 ## Comparison
 

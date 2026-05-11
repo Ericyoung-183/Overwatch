@@ -107,13 +107,17 @@ print('true' if prompt in [k.lower() for k in TRIGGER_KEYWORDS] else 'false')
 
 if [ "$MATCHED" != "true" ]; then
     SAFE_SESSION_ID=$(printf '%s' "$SESSION_ID" | tr -c 'A-Za-z0-9_.-' '_')
-    STOP_SAYS_FILE="/Users/eric/Desktop/AI杂货/stop-says/state/last_stop_says_${SAFE_SESSION_ID}.json"
-    if [ -n "$SESSION_ID" ] && [ -f "$STOP_SAYS_FILE" ]; then
-        OUTPUT=$(OW_STOP_SAYS_FILE="$STOP_SAYS_FILE" python3 -c "
+    STATUS_RELAY_DIR="${OVERWATCH_CODEX_STATUS_RELAY_DIR:-}"
+    STATUS_RELAY_FILE="${OVERWATCH_CODEX_STATUS_RELAY_FILE:-}"
+    if [ -z "$STATUS_RELAY_FILE" ] && [ -n "$STATUS_RELAY_DIR" ]; then
+        STATUS_RELAY_FILE="${STATUS_RELAY_DIR%/}/last_stop_says_${SAFE_SESSION_ID}.json"
+    fi
+    if [ -n "$SESSION_ID" ] && [ -n "$STATUS_RELAY_FILE" ] && [ -f "$STATUS_RELAY_FILE" ]; then
+        OUTPUT=$(OW_STATUS_RELAY_FILE="$STATUS_RELAY_FILE" python3 -c "
 import json
 import os
 
-path = os.environ['OW_STOP_SAYS_FILE']
+path = os.environ['OW_STATUS_RELAY_FILE']
 with open(path, encoding='utf-8') as f:
     payload = json.load(f)
 message = str(payload.get('systemMessage', '') or '').strip()
@@ -136,7 +140,7 @@ print(json.dumps({
     },
 }, ensure_ascii=False))
 " 2>/dev/null || echo '{"continue": true}')
-        rm -f "$STOP_SAYS_FILE" 2>/dev/null || true
+        rm -f "$STATUS_RELAY_FILE" 2>/dev/null || true
         exit 0
     fi
     exit 0
