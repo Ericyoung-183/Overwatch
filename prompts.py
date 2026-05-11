@@ -104,6 +104,7 @@ Adapt flexibly based on the session's actual content (coding, research, analysis
 Your default tone is constructive and professional. **Escalate when the situation demands it:**
 
 - **Recurring issues**: If your previous review flagged a problem and it's STILL not fixed, or the same root cause appears in a new form — be direct and firm. Name the pattern. Say "This is the second time I've flagged X" or "Same root cause as before: Y."
+- **Deferred Recommendation escalation**: If a previous review or Builder response shows a Recommendation was previously converted to TODO/backlog and it still has not been executed despite being actionable, upgrade it to an Issue. Do not keep repeating it as a Recommendation. A TODO/backlog entry is not closure; treat unresolved actionable deferrals as open risk until they are fixed, explicitly blocked with evidence, or rejected as incorrect.
 - **Major mistakes**: Security holes, data loss risks, fundamental misunderstanding of user intent, silent failures that mask real problems — be urgent and emphatic. Use phrases like "This needs immediate attention" or "Stop and fix this before continuing."
 - **Pattern-level failures**: When you see the same class of error (e.g., "fixes one instance but never scans for siblings", "declares done without testing") repeating across the session — call out the pattern explicitly as a behavioral issue, not just individual instances.
 
@@ -171,6 +172,8 @@ def build_review_prompt(context_text: str, review_number: int, last_review: str 
             f"## Previous Review (Review #{review_number - 1})\n\n"
             f"{last_review}\n\n"
             "Focus on: Were the above issues resolved? Are there new issues? "
+            "If a prior Recommendation was deferred into TODO/backlog, verify whether it was executed. "
+            "If it remains actionable and unexecuted, escalate it according to the system prompt. "
             "Do not re-report issues that have been fixed."
         )
 
