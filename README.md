@@ -48,6 +48,8 @@ For Codex Desktop or Codex CLI, Overwatch can use `OVERWATCH_BACKEND=codex_exec`
 
 ## Quick Start
 
+### Claude Code
+
 ```bash
 git clone https://github.com/Ericyoung-183/Overwatch.git
 cd overwatch
@@ -55,13 +57,33 @@ cd overwatch
 # Restart Claude Code — done!
 ```
 
-The installer automatically:
+The Claude Code installer automatically:
 1. Registers Stop + UserPromptSubmit hooks in your Claude Code settings
 2. Injects an Overwatch configuration section into your global `CLAUDE.md` (wrapped in `<!-- OVERWATCH:BEGIN/END -->` markers for clean removal)
 
+### Codex Desktop / Codex CLI
+
+```bash
+git clone https://github.com/Ericyoung-183/Overwatch.git
+cd overwatch
+./install_codex.sh
+# Restart Codex — done!
+```
+
+The Codex installer automatically:
+1. Registers Stop + UserPromptSubmit hooks in your Codex `hooks.json`
+2. Uses the Codex transcript adapter and `codex_exec` backend in Codex runtimes
+3. Keeps Claude Code defaults unchanged
+
+If you run a local status relay or workflow bundle, pass it during install:
+
+```bash
+OVERWATCH_CODEX_STATUS_RELAY_DIR=/path/to/relay/state ./install_codex.sh
+```
+
 ### Manual Trigger
 
-Type `overwatch`, `second opinion`, or `第二意见` in Claude Code to get an immediate review.
+Type `overwatch`, `second opinion`, or `第二意见` in Claude Code or Codex to get an immediate review.
 
 ### CLI Usage
 
@@ -156,7 +178,8 @@ overwatch/
 │   └── find_review.sh          # Review file discovery
 ├── scripts/
 │   └── check_release.sh        # Public release compatibility checks
-├── install.sh             # One-command setup
+├── install.sh             # One-command Claude Code setup
+├── install_codex.sh       # One-command Codex setup
 ├── uninstall.sh           # Clean removal
 ├── reviews/               # Review output (created at runtime)
 └── state/                 # Persistent state (created at runtime)

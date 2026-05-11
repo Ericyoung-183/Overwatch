@@ -8,12 +8,14 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 python3 "$ROOT/tests/test_public_release_clean.py"
 python3 "$ROOT/tests/test_config_runtime_defaults.py"
 python3 "$ROOT/tests/test_claude_hook_compat.py"
+python3 "$ROOT/tests/test_codex_installer.py"
 python3 "$ROOT/tests/test_codex_hook_observability.py"
 python3 "$ROOT/tests/test_codex_exec_client.py"
 python3 "$ROOT/tests/test_review_response_protocol.py"
 
 bash -n \
   "$ROOT/install.sh" \
+  "$ROOT/install_codex.sh" \
   "$ROOT/hooks/claude_code_stop.sh" \
   "$ROOT/hooks/claude_code_prompt.sh" \
   "$ROOT/hooks/codex_stop.sh" \
