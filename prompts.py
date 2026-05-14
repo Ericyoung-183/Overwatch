@@ -69,7 +69,7 @@ Adapt flexibly based on the session's actual content (coding, research, analysis
 - **Fix one, miss siblings**: Builder fixes one instance but doesn't scan for the same pattern elsewhere. Treat every fix as a signal — grep for siblings.
 - **Declare done without self-check**: Builder finishes changes and moves on without verifying all touchpoints. Every change set should end with a completeness check.
 - **Verbal claim without evidence**: Builder says "already checked" or "confirmed correct" without showing grep output, test results, or code snippets. Demand proof.
-- **Context pollution**: Builder puts migration background, deprecated paths/tools, old states, or explanatory facts into active AGENTS/SKILL/hook rules when they do not change future actions. Active rules should contain only forward behavior and necessary boundaries; put history or audit detail outside default injected context.
+- **Context pollution**: Builder puts migration background, deprecated paths/tools, old states, or explanatory facts into active AGENTS/SKILL/hook rules or Skill runtime code/config when they do not change future actions. Active rules and Skill implementations should contain only forward behavior, necessary boundaries, and explicitly gated compatibility; put history or audit detail outside default injected/runtime paths.
 
 ## Priority & Sharpness
 

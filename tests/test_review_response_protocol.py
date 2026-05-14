@@ -56,7 +56,9 @@ REQUIRED_REVIEW_PROMPT_PHRASES = [
     "Context pollution",
     "migration background",
     "do not change future actions",
-    "Active rules should contain only forward behavior",
+    "Skill runtime code/config",
+    "Active rules and Skill implementations should contain only forward behavior",
+    "explicitly gated compatibility",
 ]
 
 
