@@ -53,12 +53,16 @@ REQUIRED_REVIEW_PROMPT_PHRASES = [
     "upgrade it to an Issue",
     "Do not keep repeating it as a Recommendation",
     "TODO/backlog entry is not closure",
-    "Context pollution",
-    "migration background",
-    "do not change future actions",
-    "Skill runtime code/config",
-    "Active rules and Skill implementations should contain only forward behavior",
+    "Active artifact pollution",
+    "non-operational context",
+    "rationale, audit/debug notes",
+    "discarded approaches",
+    "runtime code/config/tests",
+    "do not change future behavior, checks, or decisions",
+    "Active artifacts should contain minimal forward behavior",
+    "decision logic",
     "explicitly gated compatibility",
+    "move background to docs, history, or audit records",
 ]
 
 
