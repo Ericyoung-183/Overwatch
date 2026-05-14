@@ -13,6 +13,7 @@ python3 "$ROOT/tests/test_codex_installer_runtime_smoke.py"
 python3 "$ROOT/tests/test_codex_hook_observability.py"
 python3 "$ROOT/tests/test_codex_exec_client.py"
 python3 "$ROOT/tests/test_review_response_protocol.py"
+python3 "$ROOT/tests/test_user_context_runtime_scope.py"
 
 bash -n \
   "$ROOT/install.sh" \

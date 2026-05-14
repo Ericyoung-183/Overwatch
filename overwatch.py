@@ -21,6 +21,7 @@ from config import (
     MIN_REVIEW_CHARS,
     REVIEW_FAILURE_COOLDOWN_SECONDS,
     REVIEW_MAX_COOLDOWN_SECONDS,
+    INCLUDE_LEGACY_CONTEXT,
 )
 from api_client import call_claude, call_claude_with_tools
 from adapters import get_adapter
@@ -105,10 +106,12 @@ def _read_last_review(session_id: str) -> str:
 def _read_user_context(project_cwd: str) -> str:
     """Auto-discover and read user's memory files for personalized review context.
 
-    Reads (if they exist):
-    - Global AGENTS.md / CLAUDE.md — user's engineering standards
-    - Project AGENTS.md / CLAUDE.md — project context
-    - Project memory feedback files (feedback_*.md) — lessons learned
+    Reads runtime-native context by default:
+    - Codex runtime: global/project AGENTS.md
+    - Claude Code runtime: global/project CLAUDE.md
+
+    Legacy cross-runtime context and Claude project feedback memory are included
+    only when OVERWATCH_INCLUDE_LEGACY_CONTEXT is enabled.
 
     Returns formatted context string, or empty if nothing found.
     """
@@ -119,11 +122,27 @@ def _read_user_context(project_cwd: str) -> str:
     sections = []
     extra_paths = os.environ.get("OVERWATCH_CONTEXT_PATHS", "")
 
-    # 1. Global user standards. Prefer Codex AGENTS.md, keep Claude Code as fallback context.
-    for label, global_path in (
-        ("Codex User Engineering Standards", os.path.expanduser("~/.codex/AGENTS.md")),
-        ("Claude Code User Engineering Standards", os.path.expanduser("~/.claude/CLAUDE.md")),
-    ):
+    def _with_optional_legacy(primary, legacy):
+        sources = list(primary)
+        if INCLUDE_LEGACY_CONTEXT:
+            seen = {path for _, path in sources}
+            sources.extend((label, path) for label, path in legacy if path not in seen)
+        return sources
+
+    is_codex = ADAPTER == "codex"
+    global_sources = _with_optional_legacy(
+        [(
+            "Codex User Engineering Standards" if is_codex else "Claude Code User Engineering Standards",
+            os.path.expanduser("~/.codex/AGENTS.md" if is_codex else "~/.claude/CLAUDE.md"),
+        )],
+        [
+            ("Legacy Codex User Engineering Standards", os.path.expanduser("~/.codex/AGENTS.md")),
+            ("Legacy Claude Code User Engineering Standards", os.path.expanduser("~/.claude/CLAUDE.md")),
+        ],
+    )
+
+    # 1. Global user standards.
+    for label, global_path in global_sources:
         if not os.path.isfile(global_path):
             continue
         try:
@@ -136,12 +155,19 @@ def _read_user_context(project_cwd: str) -> str:
         except Exception:
             pass
 
-    # 2. Project context. Prefer Codex AGENTS.md, keep Claude Code project context too.
+    # 2. Project context.
     if project_cwd:
-        for label, project_path in (
-            ("Codex Project Context", os.path.join(project_cwd, "AGENTS.md")),
-            ("Claude Code Project Context", os.path.join(project_cwd, ".claude", "CLAUDE.md")),
-        ):
+        project_sources = _with_optional_legacy(
+            [(
+                "Codex Project Context" if is_codex else "Claude Code Project Context",
+                os.path.join(project_cwd, "AGENTS.md" if is_codex else os.path.join(".claude", "CLAUDE.md")),
+            )],
+            [
+                ("Legacy Codex Project Context", os.path.join(project_cwd, "AGENTS.md")),
+                ("Legacy Claude Code Project Context", os.path.join(project_cwd, ".claude", "CLAUDE.md")),
+            ],
+        )
+        for label, project_path in project_sources:
             if not os.path.isfile(project_path):
                 continue
             try:
@@ -154,8 +180,8 @@ def _read_user_context(project_cwd: str) -> str:
             except Exception:
                 pass
 
-    # 3. Project memory feedback files (L4 — lessons learned)
-    if project_cwd:
+    # 3. Claude project memory feedback files (L4 — lessons learned).
+    if project_cwd and (not is_codex or INCLUDE_LEGACY_CONTEXT):
         # Discover memory directory: try CC_PROJECTS_BASE + fallbacks
         # CC encodes paths: / → -, non-ASCII → -, leading - kept
         encoded = "".join(c if c.isascii() and c not in "/" else "-" for c in project_cwd)

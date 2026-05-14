@@ -155,6 +155,7 @@ TRIGGER_KEYWORDS = ["overwatch", "second opinion", "第二意见"]  # Manual tri
 | `ANTHROPIC_BASE_URL` | API endpoint | `https://api.anthropic.com` |
 | `OVERWATCH_REVIEW_MODEL` | Override review model | from `ANTHROPIC_MODEL` |
 | `OVERWATCH_SUMMARY_MODEL` | Override summary model | from `ANTHROPIC_DEFAULT_HAIKU_MODEL` |
+| `OVERWATCH_INCLUDE_LEGACY_CONTEXT` | Include cross-runtime legacy context in review prompts | `false` |
 | `OVERWATCH_CC_PROJECTS` | Claude Code projects directory | `~/.claude/projects` |
 
 ## Architecture

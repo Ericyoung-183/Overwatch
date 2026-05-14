@@ -112,6 +112,11 @@ REVIEW_MAX_COOLDOWN_SECONDS = int(_clean_env(os.environ.get("OVERWATCH_REVIEW_MA
 # the API section above where ADAPTER is initialized before backend selection.
 
 # --- Session Metadata ---
+INCLUDE_LEGACY_CONTEXT = _clean_env(
+    os.environ.get("OVERWATCH_INCLUDE_LEGACY_CONTEXT", "false"),
+    "false",
+).lower() in ("1", "true", "yes", "on")
+
 # Claude Code stores projects under this base directory.
 # Override with OVERWATCH_CC_PROJECTS env var if your installation differs.
 CC_PROJECTS_BASE = os.environ.get("OVERWATCH_CC_PROJECTS", os.path.expanduser("~/.claude/projects"))

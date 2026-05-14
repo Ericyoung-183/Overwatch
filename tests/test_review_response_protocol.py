@@ -53,6 +53,10 @@ REQUIRED_REVIEW_PROMPT_PHRASES = [
     "upgrade it to an Issue",
     "Do not keep repeating it as a Recommendation",
     "TODO/backlog entry is not closure",
+    "Context pollution",
+    "migration background",
+    "do not change future actions",
+    "Active rules should contain only forward behavior",
 ]
 
 
