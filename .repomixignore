@@ -1,0 +1,23 @@
+# Runtime and review artifacts
+state/
+reviews/
+*.log
+
+# Local test/cache artifacts
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+
+# Local/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Repomix outputs should not feed into later Repomix runs
+repomix-output.*
+*.repomix.*
