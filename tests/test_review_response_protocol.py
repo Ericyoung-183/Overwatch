@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import sys
+import importlib.util
 from pathlib import Path
 
 
@@ -156,6 +157,14 @@ def test_install_snippet_uses_protocol_placeholder() -> None:
     test("install snippet has protocol placeholder", "{{REVIEW_RESPONSE_PROTOCOL}}" in text)
 
 
+def test_prompts_can_load_from_file_without_caller_pythonpath() -> None:
+    spec = importlib.util.spec_from_file_location("standalone_prompts", ROOT / "prompts.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    test("standalone prompts import exposes review prompt", "Anchor agenda drift" in module.OVERWATCH_SYSTEM_PROMPT)
+
+
 if __name__ == "__main__":
     test_protocol_defines_closed_loop_handling()
     test_reviewer_prompt_escalates_unexecuted_todo_recommendations()
@@ -164,4 +173,5 @@ if __name__ == "__main__":
     test_manual_context_embeds_protocol_and_commands()
     test_hooks_use_shared_protocol_builders()
     test_install_snippet_uses_protocol_placeholder()
+    test_prompts_can_load_from_file_without_caller_pythonpath()
     print("review_response_protocol tests passed")
