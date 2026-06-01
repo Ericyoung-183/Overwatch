@@ -20,6 +20,10 @@ SESSION_ID=$(echo "$INPUT" | python3 -c "import os,sys,json; d=json.load(sys.std
 CWD=$(echo "$INPUT" | python3 -c "import os,sys,json; d=json.load(sys.stdin); print(d.get('cwd') or os.getcwd())" 2>/dev/null || pwd)
 
 render_anchor_context() {
+    case "${ANCHOR_DISABLE:-}" in
+        1|true|TRUE|yes|YES) return 0 ;;
+    esac
+
     local helper="${ANCHOR_HELPER:-}"
     if [ -z "$helper" ]; then
         local installed_helper="${HOME:-}/.codex/skills/anchor/scripts/anchor.py"
@@ -34,6 +38,12 @@ render_anchor_context() {
     local args=(python3 "$helper" render-context --cwd "$CWD" --thread-id "$SESSION_ID")
     if [ -n "${ANCHOR_GLOBAL_STATE_ROOT:-}" ]; then
         args+=(--global-state-root "$ANCHOR_GLOBAL_STATE_ROOT")
+    fi
+    if [ -n "${ANCHOR_MAX_CONTEXT_CHARS:-}" ]; then
+        args+=(--max-context-chars "$ANCHOR_MAX_CONTEXT_CHARS")
+    fi
+    if [ -n "${ANCHOR_STALE_AFTER_MINUTES:-}" ]; then
+        args+=(--stale-after-minutes "$ANCHOR_STALE_AFTER_MINUTES")
     fi
     "${args[@]}" 2>/dev/null || true
 }

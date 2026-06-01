@@ -195,6 +195,56 @@ def test_prompt_hook_injects_anchor_context_when_helper_is_configured() -> None:
         test("prompt hook injects Anchor current path", "Current: A" in context, context)
         test("prompt hook injects Anchor state source", "State source: project-local" in context, context)
 
+        disabled = run_hook(
+            "codex_prompt.sh",
+            {
+                "session_id": sid,
+                "transcript_path": "/tmp/codex-observability-transcript.jsonl",
+                "cwd": str(project),
+                "user_prompt": "normal message",
+            },
+            env={
+                "HOME": str(home),
+                "ANCHOR_GLOBAL_STATE_ROOT": str(global_state),
+                "ANCHOR_DISABLE": "1",
+            },
+        )
+        test("prompt hook respects ANCHOR_DISABLE", "hookSpecificOutput" not in disabled, str(disabled))
+
+        capped = run_hook(
+            "codex_prompt.sh",
+            {
+                "session_id": sid,
+                "transcript_path": "/tmp/codex-observability-transcript.jsonl",
+                "cwd": str(project),
+                "user_prompt": "normal message",
+            },
+            env={
+                "HOME": str(home),
+                "ANCHOR_GLOBAL_STATE_ROOT": str(global_state),
+                "ANCHOR_MAX_CONTEXT_CHARS": "120",
+            },
+        )
+        capped_context = str(capped.get("hookSpecificOutput", {}).get("additionalContext", ""))
+        test("prompt hook caps Anchor context", len(capped_context) <= 170, capped_context)
+
+        other_project = Path(tmp) / "other-project"
+        other_project.mkdir()
+        unrelated = run_hook(
+            "codex_prompt.sh",
+            {
+                "session_id": sid,
+                "transcript_path": "/tmp/codex-observability-transcript.jsonl",
+                "cwd": str(other_project),
+                "user_prompt": "normal message",
+            },
+            env={
+                "HOME": str(home),
+                "ANCHOR_GLOBAL_STATE_ROOT": str(global_state),
+            },
+        )
+        test("prompt hook ignores unrelated Anchor state", "hookSpecificOutput" not in unrelated, str(unrelated))
+
 
 def test_codex_prompt_has_no_eric_local_status_path() -> None:
     text = (ROOT / "hooks" / "codex_prompt.sh").read_text(encoding="utf-8")
