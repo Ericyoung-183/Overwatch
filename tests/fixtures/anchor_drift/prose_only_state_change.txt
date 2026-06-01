@@ -1,0 +1,6 @@
+[Anchor]
+Current: A
+Tracker: /tmp/project/.anchor/state/thread/active.json
+
+User: A 先跳过，后面再说。
+Builder: 好，A 我记为 deferred。我们直接讨论 B。

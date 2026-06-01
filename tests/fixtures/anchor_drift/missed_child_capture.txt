@@ -1,0 +1,8 @@
+[Anchor]
+Current: C
+Rule: continue deepest unfinished item; return to parent after child agenda closes.
+
+User: C 里又拆出 1 方案、2 风险、3 验证。我们继续逐一过。
+Builder: 好，先讲 1。讲完之后我会再判断下一步。
+User: 下一个。
+Builder: 现在我觉得可以回到 D。

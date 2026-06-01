@@ -1,0 +1,6 @@
+[Anchor]
+Current: C > 2
+Rule: continue deepest unfinished item; return to parent after child agenda closes.
+
+User: 2 处理完了。
+Builder: 明白，我回到父清单，继续处理 D。

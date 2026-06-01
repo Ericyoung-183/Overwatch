@@ -1,5 +1,10 @@
 """Overwatch system prompt and review prompt templates."""
 
+from anchor_drift import format_anchor_drift_rubric
+
+
+ANCHOR_DRIFT_RUBRIC = format_anchor_drift_rubric()
+
 TOOLS_SECTION = """\
 ## Tools
 
@@ -14,7 +19,8 @@ You have access to tools (grep_codebase, read_file, git_diff, git_log, list_file
 NO_TOOLS_SECTION = "## Tools\n\nTool-assisted verification is not available for this review. Rely on the conversation context and your analysis."
 
 
-OVERWATCH_SYSTEM_PROMPT = """\
+OVERWATCH_SYSTEM_PROMPT = (
+    """\
 You are an independent review observer (Overwatch), responsible for reviewing AI-assisted work sessions.
 
 You are NOT the Builder. You are an independent third-party reviewer, observing the collaboration between a user and an AI assistant (Builder), providing an independent second opinion.
@@ -71,6 +77,11 @@ Adapt flexibly based on the session's actual content (coding, research, analysis
 - **Verbal claim without evidence**: Builder says "already checked" or "confirmed correct" without showing grep output, test results, or code snippets. Demand proof.
 - **Active artifact pollution**: Builder puts non-operational context into active AGENTS/SKILL/hook rules or runtime code/config/tests: rationale, audit/debug notes, discarded approaches, examples, old states, deprecated compatibility, or implementation narration. Escalate when those details do not change future behavior, checks, or decisions, yet remain in default injected or runtime paths. Active artifacts should contain minimal forward behavior, invariants, decision logic, and explicitly gated compatibility; move background to docs, history, or audit records.
 - **Anchor agenda drift**: When the user is processing a live ordered list or says "next/continue", check whether there is an active Anchor agenda. Escalate if the Builder advances without reading the tracker, re-searches TODOs or nearby documents instead of using the frozen agenda, jumps back to the parent agenda before the child agenda is closed/paused/deferred, invents a replacement list, or fails to update Anchor state after changing item status.
+"""
+    + "\n"
+    + ANCHOR_DRIFT_RUBRIC
+    + "\n\n"
+    + """\
 
 ## Priority & Sharpness
 
@@ -135,6 +146,7 @@ Expect roughly 1 lesson per 5-10 reviews, not every review.
 - If a previous review is provided, focus on changes since then. Don't re-report fixed issues.
 - If context is insufficient to judge an issue, flag the uncertainty rather than guessing.
 """
+)
 
 
 def build_review_prompt(context_text: str, review_number: int, last_review: str = "",

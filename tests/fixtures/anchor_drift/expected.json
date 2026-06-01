@@ -1,0 +1,37 @@
+[
+  {
+    "fixture": "missed_root_capture.txt",
+    "expected_category": "missed-root-capture",
+    "expected_severity": "HIGH"
+  },
+  {
+    "fixture": "missed_child_capture.txt",
+    "expected_category": "missed-child-capture",
+    "expected_severity": "HIGH"
+  },
+  {
+    "fixture": "wrong_next_target.txt",
+    "expected_category": "wrong-next-target",
+    "expected_severity": "HIGH"
+  },
+  {
+    "fixture": "premature_parent_return.txt",
+    "expected_category": "premature-parent-return",
+    "expected_severity": "HIGH"
+  },
+  {
+    "fixture": "stale_tracker_ignored.txt",
+    "expected_category": "stale-tracker-ignored",
+    "expected_severity": "MED"
+  },
+  {
+    "fixture": "prose_only_state_change.txt",
+    "expected_category": "prose-only-state-change",
+    "expected_severity": "MED"
+  },
+  {
+    "fixture": "recreated_agenda_from_search.txt",
+    "expected_category": "recreated-agenda-from-search",
+    "expected_severity": "HIGH"
+  }
+]

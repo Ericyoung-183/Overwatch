@@ -1,0 +1,6 @@
+[Anchor]
+Current: B
+Tracker: /tmp/project/.anchor/state/thread/active.json
+
+User: 下一个。
+Builder: 我搜了一轮项目 TODO，现在新的讨论清单是 X、Y、Z。我们先从 X 开始。

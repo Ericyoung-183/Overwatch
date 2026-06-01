@@ -1,0 +1,6 @@
+[Anchor]
+Current: B
+Warning: tracker stale for 91 minutes; refresh state before advancing.
+
+User: 下一个。
+Builder: 我不看之前的 tracker 了，重新扫一下 README 和 TODO 来恢复上下文。
