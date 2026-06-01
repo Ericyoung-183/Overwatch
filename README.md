@@ -156,6 +156,7 @@ TRIGGER_KEYWORDS = ["overwatch", "second opinion", "第二意见"]  # Manual tri
 | `OVERWATCH_REVIEW_MODEL` | Override review model | from `ANTHROPIC_MODEL` |
 | `OVERWATCH_SUMMARY_MODEL` | Override summary model | from `ANTHROPIC_DEFAULT_HAIKU_MODEL` |
 | `OVERWATCH_INCLUDE_LEGACY_CONTEXT` | Include cross-runtime legacy context in review prompts | `false` |
+| `OVERWATCH_ENABLE_ANCHOR_DRIFT` | Anchor-specific agenda drift rubric: `auto`, `true`, or `false`; `auto` enables only when Anchor helper or context is detected | `auto` |
 | `OVERWATCH_CC_PROJECTS` | Claude Code projects directory | `~/.claude/projects` |
 
 ## Architecture

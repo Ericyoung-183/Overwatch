@@ -12,6 +12,20 @@ from anchor_drift import format_anchor_drift_rubric
 
 
 ANCHOR_DRIFT_RUBRIC = format_anchor_drift_rubric()
+GENERIC_LIST_DRIFT_RULE = (
+    "- **Sequential list drift**: When the user is processing a live ordered list or says "
+    "\"next/continue\", verify that the Builder continues the current frozen list and deepest "
+    "unfinished layer instead of re-searching, inventing a replacement list, or jumping levels."
+)
+ANCHOR_DRIFT_RULE = (
+    "- **Anchor agenda drift**: When the user is processing a live ordered list or says "
+    "\"next/continue\", check whether there is an active Anchor agenda. Escalate if the Builder "
+    "advances without reading the tracker, re-searches TODOs or nearby documents instead of using "
+    "the frozen agenda, jumps back to the parent agenda before the child agenda is "
+    "closed/paused/deferred, invents a replacement list, or fails to update Anchor state after "
+    "changing item status."
+)
+ANCHOR_DRIFT_SECTION = ANCHOR_DRIFT_RULE + "\n" + ANCHOR_DRIFT_RUBRIC
 
 TOOLS_SECTION = """\
 ## Tools
@@ -84,10 +98,11 @@ Adapt flexibly based on the session's actual content (coding, research, analysis
 - **Declare done without self-check**: Builder finishes changes and moves on without verifying all touchpoints. Every change set should end with a completeness check.
 - **Verbal claim without evidence**: Builder says "already checked" or "confirmed correct" without showing grep output, test results, or code snippets. Demand proof.
 - **Active artifact pollution**: Builder puts non-operational context into active AGENTS/SKILL/hook rules or runtime code/config/tests: rationale, audit/debug notes, discarded approaches, examples, old states, deprecated compatibility, or implementation narration. Escalate when those details do not change future behavior, checks, or decisions, yet remain in default injected or runtime paths. Active artifacts should contain minimal forward behavior, invariants, decision logic, and explicitly gated compatibility; move background to docs, history, or audit records.
-- **Anchor agenda drift**: When the user is processing a live ordered list or says "next/continue", check whether there is an active Anchor agenda. Escalate if the Builder advances without reading the tracker, re-searches TODOs or nearby documents instead of using the frozen agenda, jumps back to the parent agenda before the child agenda is closed/paused/deferred, invents a replacement list, or fails to update Anchor state after changing item status.
 """
     + "\n"
-    + ANCHOR_DRIFT_RUBRIC
+    + GENERIC_LIST_DRIFT_RULE
+    + "\n"
+    + ANCHOR_DRIFT_SECTION
     + "\n\n"
     + """\
 
@@ -157,6 +172,51 @@ Expect roughly 1 lesson per 5-10 reviews, not every review.
 )
 
 
+def _env_bool_mode(value: str) -> str:
+    value = str(value or "").strip().lower()
+    if value in {"1", "true", "yes", "on", "force"}:
+        return "true"
+    if value in {"0", "false", "no", "off", "disable", "disabled"}:
+        return "false"
+    return "auto"
+
+
+def _anchor_helper_exists() -> bool:
+    helper = os.environ.get("ANCHOR_HELPER", "").strip()
+    if helper and os.path.isfile(os.path.expanduser(helper)):
+        return True
+    home = os.path.expanduser(os.environ.get("HOME", "~"))
+    installed = os.path.join(home, ".codex", "skills", "anchor", "scripts", "anchor.py")
+    return os.path.isfile(installed)
+
+
+def _context_has_anchor_signal(context_text: str) -> bool:
+    return any(
+        marker in context_text
+        for marker in [
+            "[Anchor]",
+            "Anchor project root:",
+            "State source: project-local",
+            "State source: global-fallback",
+        ]
+    )
+
+
+def should_enable_anchor_drift(context_text: str) -> bool:
+    mode = _env_bool_mode(os.environ.get("OVERWATCH_ENABLE_ANCHOR_DRIFT", "auto"))
+    if mode == "true":
+        return True
+    if mode == "false":
+        return False
+    return _context_has_anchor_signal(context_text) or _anchor_helper_exists()
+
+
+def system_prompt_template_for_context(context_text: str) -> str:
+    if should_enable_anchor_drift(context_text):
+        return OVERWATCH_SYSTEM_PROMPT
+    return OVERWATCH_SYSTEM_PROMPT.replace(ANCHOR_DRIFT_SECTION + "\n\n", "")
+
+
 def build_review_prompt(context_text: str, review_number: int, last_review: str = "",
                         include_tools: bool = True) -> tuple:
     """Assemble the user prompt sent to the Overwatch reviewer.
@@ -171,7 +231,8 @@ def build_review_prompt(context_text: str, review_number: int, last_review: str 
         (system_prompt, user_message) tuple.
     """
     tools_section = TOOLS_SECTION if include_tools else NO_TOOLS_SECTION
-    system = OVERWATCH_SYSTEM_PROMPT.format(review_number=review_number, tools_section=tools_section)
+    system_template = system_prompt_template_for_context(context_text)
+    system = system_template.format(review_number=review_number, tools_section=tools_section)
 
     parts = []
 

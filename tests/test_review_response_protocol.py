@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import os
 import sys
+import tempfile
 import importlib.util
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -73,6 +76,24 @@ REQUIRED_REVIEW_PROMPT_PHRASES = [
 ]
 
 
+@contextmanager
+def temporary_env(updates: dict[str, str], remove: list[str] | None = None):
+    remove = remove or []
+    keys = set(updates) | set(remove)
+    old = {key: os.environ.get(key) for key in keys}
+    try:
+        for key in remove:
+            os.environ.pop(key, None)
+        os.environ.update(updates)
+        yield
+    finally:
+        for key, value in old.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def test(name: str, condition: bool, detail: str = "") -> None:
     if condition:
         print(f"  PASS {name}")
@@ -113,6 +134,42 @@ def test_incremental_review_message_tracks_prior_deferred_items() -> None:
     test("incremental review includes previous review", "Previous Review (Review #2)" in user_message)
     test("incremental review keeps escalation rule in system prompt", "upgrade it to an Issue" in system)
     test("incremental review asks whether prior issues were resolved", "Were the above issues resolved?" in user_message)
+
+
+def test_anchor_drift_prompt_can_be_disabled_for_non_anchor_users() -> None:
+    with temporary_env({"OVERWATCH_ENABLE_ANCHOR_DRIFT": "false"}):
+        system, _ = build_review_prompt("RECENT CONTEXT", review_number=1, include_tools=False)
+
+    test("generic list drift remains enabled", "Sequential list drift" in system)
+    test("disabled prompt omits Anchor-specific rule", "Anchor agenda drift" not in system)
+    test("disabled prompt omits Anchor category ids", "missed-root-capture" not in system)
+
+
+def test_anchor_drift_auto_requires_anchor_signal() -> None:
+    with tempfile.TemporaryDirectory() as home:
+        with temporary_env(
+            {"OVERWATCH_ENABLE_ANCHOR_DRIFT": "auto", "HOME": home},
+            remove=["ANCHOR_HELPER"],
+        ):
+            system_without_anchor, _ = build_review_prompt("RECENT CONTEXT", review_number=1, include_tools=False)
+            system_with_context, _ = build_review_prompt("[Anchor]\nCurrent: A", review_number=1, include_tools=False)
+            helper = Path(home) / ".codex" / "skills" / "anchor" / "scripts" / "anchor.py"
+            helper.parent.mkdir(parents=True)
+            helper.write_text("# helper marker\n", encoding="utf-8")
+            system_with_helper, _ = build_review_prompt("RECENT CONTEXT", review_number=1, include_tools=False)
+
+    test("auto prompt omits Anchor rule without helper or context", "Anchor agenda drift" not in system_without_anchor)
+    test("auto prompt includes Anchor rule when context has Anchor", "Anchor agenda drift" in system_with_context)
+    test("auto prompt includes rubric when context has Anchor", "missed-root-capture" in system_with_context)
+    test("auto prompt includes Anchor rule when helper exists", "Anchor agenda drift" in system_with_helper)
+
+
+def test_anchor_drift_prompt_can_be_forced_on() -> None:
+    with temporary_env({"OVERWATCH_ENABLE_ANCHOR_DRIFT": "true"}):
+        system, _ = build_review_prompt("RECENT CONTEXT", review_number=1, include_tools=False)
+
+    test("forced prompt includes Anchor rule", "Anchor agenda drift" in system)
+    test("forced prompt includes Anchor rubric", "missed-root-capture" in system)
 
 
 def test_auto_context_embeds_protocol_and_review_text() -> None:
@@ -169,6 +226,9 @@ if __name__ == "__main__":
     test_protocol_defines_closed_loop_handling()
     test_reviewer_prompt_escalates_unexecuted_todo_recommendations()
     test_incremental_review_message_tracks_prior_deferred_items()
+    test_anchor_drift_prompt_can_be_disabled_for_non_anchor_users()
+    test_anchor_drift_auto_requires_anchor_signal()
+    test_anchor_drift_prompt_can_be_forced_on()
     test_auto_context_embeds_protocol_and_review_text()
     test_manual_context_embeds_protocol_and_commands()
     test_hooks_use_shared_protocol_builders()
