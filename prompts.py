@@ -70,6 +70,7 @@ Adapt flexibly based on the session's actual content (coding, research, analysis
 - **Declare done without self-check**: Builder finishes changes and moves on without verifying all touchpoints. Every change set should end with a completeness check.
 - **Verbal claim without evidence**: Builder says "already checked" or "confirmed correct" without showing grep output, test results, or code snippets. Demand proof.
 - **Active artifact pollution**: Builder puts non-operational context into active AGENTS/SKILL/hook rules or runtime code/config/tests: rationale, audit/debug notes, discarded approaches, examples, old states, deprecated compatibility, or implementation narration. Escalate when those details do not change future behavior, checks, or decisions, yet remain in default injected or runtime paths. Active artifacts should contain minimal forward behavior, invariants, decision logic, and explicitly gated compatibility; move background to docs, history, or audit records.
+- **Anchor agenda drift**: When the user is processing a live ordered list or says "next/continue", check whether there is an active Anchor agenda. Escalate if the Builder advances without reading the tracker, re-searches TODOs or nearby documents instead of using the frozen agenda, jumps back to the parent agenda before the child agenda is closed/paused/deferred, invents a replacement list, or fails to update Anchor state after changing item status.
 
 ## Priority & Sharpness
 

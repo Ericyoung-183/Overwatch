@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -138,6 +139,63 @@ def test_prompt_hook_surfaces_previous_stop_says_once() -> None:
         test("prompt hook consumes previous Stop Says", not stop_file.exists(), "status file still exists")
 
 
+def test_prompt_hook_injects_anchor_context_when_helper_is_configured() -> None:
+    sid = "codex-observability-anchor"
+    helper_source = os.environ.get("ANCHOR_TEST_HELPER", "")
+    if not helper_source or not Path(helper_source).exists():
+        print("  SKIP prompt hook injects Anchor context -- ANCHOR_TEST_HELPER not set")
+        return
+
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp) / "home"
+        helper = home / ".codex" / "skills" / "anchor" / "scripts" / "anchor.py"
+        helper.parent.mkdir(parents=True)
+        shutil.copy2(helper_source, helper)
+        project = Path(tmp) / "project"
+        global_state = Path(tmp) / "global-state"
+        project.mkdir()
+        subprocess.run(["python3", str(helper), "init-project", str(project), "--name", "Hook Demo"], check=True)
+        subprocess.run(
+            [
+                "python3",
+                str(helper),
+                "init",
+                "--cwd",
+                str(project),
+                "--thread-id",
+                sid,
+                "--title",
+                "Root agenda",
+                "--item",
+                "A",
+                "--item",
+                "B",
+                "--global-state-root",
+                str(global_state),
+            ],
+            check=True,
+        )
+
+        response = run_hook(
+            "codex_prompt.sh",
+            {
+                "session_id": sid,
+                "transcript_path": "/tmp/codex-observability-transcript.jsonl",
+                "cwd": str(project),
+                "user_prompt": "normal message",
+            },
+            env={
+                "HOME": str(home),
+                "ANCHOR_GLOBAL_STATE_ROOT": str(global_state),
+            },
+        )
+
+        context = str(response.get("hookSpecificOutput", {}).get("additionalContext", ""))
+        test("prompt hook injects Anchor marker", "[Anchor]" in context, context)
+        test("prompt hook injects Anchor current path", "Current: A" in context, context)
+        test("prompt hook injects Anchor state source", "State source: project-local" in context, context)
+
+
 def test_codex_prompt_has_no_eric_local_status_path() -> None:
     text = (ROOT / "hooks" / "codex_prompt.sh").read_text(encoding="utf-8")
     test("codex prompt uses configurable status relay", "OVERWATCH_CODEX_STATUS_RELAY_DIR" in text)
@@ -149,5 +207,6 @@ if __name__ == "__main__":
     test_prompt_hook_updates_session_map()
     test_stop_hook_records_skip_reason_when_transcript_missing()
     test_prompt_hook_surfaces_previous_stop_says_once()
+    test_prompt_hook_injects_anchor_context_when_helper_is_configured()
     test_codex_prompt_has_no_eric_local_status_path()
     print("codex hook observability tests passed")

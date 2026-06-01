@@ -63,6 +63,12 @@ REQUIRED_REVIEW_PROMPT_PHRASES = [
     "decision logic",
     "explicitly gated compatibility",
     "move background to docs, history, or audit records",
+    "Anchor agenda drift",
+    "active Anchor agenda",
+    "without reading the tracker",
+    "re-searches TODOs",
+    "jumps back to the parent agenda",
+    "fails to update Anchor state",
 ]
 
 

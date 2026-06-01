@@ -19,6 +19,25 @@ mkdir -p "$STATE_DIR"
 SESSION_ID=$(echo "$INPUT" | python3 -c "import os,sys,json; d=json.load(sys.stdin); print(d.get('session_id') or os.environ.get('CODEX_THREAD_ID',''))" 2>/dev/null || echo "")
 CWD=$(echo "$INPUT" | python3 -c "import os,sys,json; d=json.load(sys.stdin); print(d.get('cwd') or os.getcwd())" 2>/dev/null || pwd)
 
+render_anchor_context() {
+    local helper="${ANCHOR_HELPER:-}"
+    if [ -z "$helper" ]; then
+        local installed_helper="${HOME:-}/.codex/skills/anchor/scripts/anchor.py"
+        if [ -f "$installed_helper" ]; then
+            helper="$installed_helper"
+        fi
+    fi
+    [ -z "$helper" ] && return 0
+    [ -z "$SESSION_ID" ] && return 0
+    [ ! -f "$helper" ] && return 0
+
+    local args=(python3 "$helper" render-context --cwd "$CWD" --thread-id "$SESSION_ID")
+    if [ -n "${ANCHOR_GLOBAL_STATE_ROOT:-}" ]; then
+        args+=(--global-state-root "$ANCHOR_GLOBAL_STATE_ROOT")
+    fi
+    "${args[@]}" 2>/dev/null || true
+}
+
 find_transcript() {
     OW_SID="$SESSION_ID" python3 - <<'PY'
 import os
@@ -106,6 +125,7 @@ print('true' if prompt in [k.lower() for k in TRIGGER_KEYWORDS] else 'false')
 " 2>/dev/null || echo "false")
 
 if [ "$MATCHED" != "true" ]; then
+    ANCHOR_CONTEXT=$(render_anchor_context)
     SAFE_SESSION_ID=$(printf '%s' "$SESSION_ID" | tr -c 'A-Za-z0-9_.-' '_')
     STATUS_RELAY_DIR="${OVERWATCH_CODEX_STATUS_RELAY_DIR:-}"
     STATUS_RELAY_FILE="${OVERWATCH_CODEX_STATUS_RELAY_FILE:-}"
@@ -113,7 +133,7 @@ if [ "$MATCHED" != "true" ]; then
         STATUS_RELAY_FILE="${STATUS_RELAY_DIR%/}/last_stop_says_${SAFE_SESSION_ID}.json"
     fi
     if [ -n "$SESSION_ID" ] && [ -n "$STATUS_RELAY_FILE" ] && [ -f "$STATUS_RELAY_FILE" ]; then
-        OUTPUT=$(OW_STATUS_RELAY_FILE="$STATUS_RELAY_FILE" python3 -c "
+        OUTPUT=$(OW_STATUS_RELAY_FILE="$STATUS_RELAY_FILE" OW_ANCHOR_CONTEXT="$ANCHOR_CONTEXT" python3 -c "
 import json
 import os
 
@@ -131,6 +151,9 @@ context = (
     f'{message}\\n'
     '</system-reminder>'
 )
+anchor = os.environ.get('OW_ANCHOR_CONTEXT', '').strip()
+if anchor:
+    context = context + '\\n\\n<system-reminder>\\n' + anchor + '\\n</system-reminder>'
 print(json.dumps({
     'continue': True,
     'systemMessage': '[Stop Says] Previous turn status delivered.',
@@ -141,6 +164,23 @@ print(json.dumps({
 }, ensure_ascii=False))
 " 2>/dev/null || echo '{"continue": true}')
         rm -f "$STATUS_RELAY_FILE" 2>/dev/null || true
+        exit 0
+    fi
+    if [ -n "$ANCHOR_CONTEXT" ]; then
+        OUTPUT=$(OW_ANCHOR_CONTEXT="$ANCHOR_CONTEXT" python3 -c "
+import json
+import os
+
+context = '<system-reminder>\\n' + os.environ['OW_ANCHOR_CONTEXT'].strip() + '\\n</system-reminder>'
+print(json.dumps({
+    'continue': True,
+    'systemMessage': '[Anchor] Active agenda context delivered.',
+    'hookSpecificOutput': {
+        'hookEventName': 'UserPromptSubmit',
+        'additionalContext': context,
+    },
+}, ensure_ascii=False))
+" 2>/dev/null || echo '{"continue": true}')
         exit 0
     fi
     exit 0
