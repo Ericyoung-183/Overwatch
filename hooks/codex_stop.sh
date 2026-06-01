@@ -5,8 +5,8 @@ set -euo pipefail
 
 OVERWATCH_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OVERWATCH_PY="${OVERWATCH_DIR}/overwatch.py"
-STATE_DIR="${OVERWATCH_DIR}/state"
-LOG_FILE="${OVERWATCH_DIR}/overwatch.log"
+STATE_DIR="${OVERWATCH_STATE_DIR:-${OVERWATCH_DIR}/state}"
+LOG_FILE="${OVERWATCH_LOG_FILE:-${OVERWATCH_DIR}/overwatch.log}"
 
 read TURN_THRESHOLD SMART_TRIGGER TURN_MIN TURN_MAX <<< $(OVERWATCH_ADAPTER=codex OVERWATCH_BACKEND=codex_exec python3 -c "
 import sys; sys.path.insert(0,'$OVERWATCH_DIR')
@@ -30,7 +30,7 @@ write_stop_status() {
     local last_reviewed="${4:-}"
     local review_count="${5:-}"
     [ -z "${SESSION_ID:-}" ] && return 0
-    OW_STATE_DIR="$STATE_DIR" OW_SID="$SESSION_ID" OW_CWD="${CWD:-}" OW_TRANSCRIPT="${TRANSCRIPT_PATH:-}" \
+    OW_STATE_DIR="$STATE_DIR" OW_DIR="$OVERWATCH_DIR" OW_SID="$SESSION_ID" OW_CWD="${CWD:-}" OW_TRANSCRIPT="${TRANSCRIPT_PATH:-}" \
     OW_STATUS="$status" OW_REASON="$reason" OW_CURRENT_TURNS="$current_turns" \
     OW_LAST_REVIEWED="$last_reviewed" OW_REVIEW_COUNT="$review_count" python3 -c "
 import datetime as dt
@@ -42,7 +42,7 @@ import tempfile
 state_dir = os.environ['OW_STATE_DIR']
 sid = os.environ['OW_SID']
 cwd = os.environ.get('OW_CWD', '')
-sys.path.insert(0, os.path.dirname(state_dir))
+sys.path.insert(0, os.environ['OW_DIR'])
 try:
     from config import ALLOWED_PROJECTS
 except Exception:

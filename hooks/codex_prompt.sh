@@ -4,8 +4,8 @@
 set -euo pipefail
 
 OVERWATCH_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-STATE_DIR="${OVERWATCH_DIR}/state"
-LOG_FILE="${OVERWATCH_DIR}/overwatch.log"
+STATE_DIR="${OVERWATCH_STATE_DIR:-${OVERWATCH_DIR}/state}"
+LOG_FILE="${OVERWATCH_LOG_FILE:-${OVERWATCH_DIR}/overwatch.log}"
 
 OUTPUT='{"continue": true}'
 cleanup() {
@@ -68,8 +68,15 @@ render_anchor_todo_bridge_reminder() {
 import os
 prompt = os.environ.get("USER_PROMPT", "")
 lower = prompt.lower()
-needles = ["todo", "待办", "任务清单", "还有哪些", "没做", "继续处理", "未完成"]
-if not any(needle in lower or needle in prompt for needle in needles):
+direct_needles = ["todo", "待办", "任务清单", "task list", "tasks"]
+context_needles = ["还有哪些", "没做", "继续处理", "未完成", "remaining", "open"]
+todo_terms = ["todo", "待办", "任务", "task"]
+direct_match = any(needle in lower or needle in prompt for needle in direct_needles)
+contextual_match = (
+    any(needle in lower or needle in prompt for needle in context_needles)
+    and any(term in lower or term in prompt for term in todo_terms)
+)
+if not (direct_match or contextual_match):
     raise SystemExit(0)
 print(
     "[Anchor Todo Bridge]\n"
@@ -125,10 +132,10 @@ PENDING_FILE="${STATE_DIR}/auto_review_pending_${SESSION_ID}.json"
 { echo "[Overwatch Codex Prompt $(date +%H:%M:%S)] Hook fired (session=$SESSION_ID, pending_exists=$([ -f "$PENDING_FILE" ] && echo yes || echo no))" >> "$LOG_FILE"; } 2>/dev/null || true
 
 if [ -n "$SESSION_ID" ] && [ -f "$PENDING_FILE" ]; then
-    OUTPUT=$(OW_STATE="$STATE_DIR" OW_PENDING="$PENDING_FILE" python3 -c "
+    OUTPUT=$(OW_STATE="$STATE_DIR" OW_PENDING="$PENDING_FILE" OW_DIR="$OVERWATCH_DIR" python3 -c "
 import json, os, sys
 state_dir = os.environ['OW_STATE']
-sys.path.insert(0, os.path.dirname(state_dir))
+sys.path.insert(0, os.environ['OW_DIR'])
 from response_protocol import build_auto_review_context
 pending = json.load(open(os.environ['OW_PENDING']))
 review_path = pending['review_path']
@@ -217,10 +224,12 @@ print(json.dumps({
 import json
 import os
 
-context = '<system-reminder>\\n' + os.environ['OW_ANCHOR_CONTEXT'].strip() + '\\n</system-reminder>'
+anchor_context = os.environ['OW_ANCHOR_CONTEXT'].strip()
+context = '<system-reminder>\\n' + anchor_context + '\\n</system-reminder>'
+message = '[Anchor] Todo Bridge reminder delivered.' if '[Anchor Todo Bridge]' in anchor_context else '[Anchor] Active agenda context delivered.'
 print(json.dumps({
     'continue': True,
-    'systemMessage': '[Anchor] Active agenda context delivered.',
+    'systemMessage': message,
     'hookSpecificOutput': {
         'hookEventName': 'UserPromptSubmit',
         'additionalContext': context,

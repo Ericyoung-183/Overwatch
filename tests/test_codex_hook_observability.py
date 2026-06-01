@@ -8,11 +8,15 @@ import os
 import shutil
 import subprocess
 import tempfile
+import atexit
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-STATE_DIR = ROOT / "state"
+TEST_ROOT = Path(tempfile.mkdtemp(prefix="overwatch-hook-tests-"))
+STATE_DIR = TEST_ROOT / "state"
+LOG_FILE = TEST_ROOT / "overwatch.log"
+atexit.register(lambda: shutil.rmtree(TEST_ROOT, ignore_errors=True))
 
 
 def test(name: str, condition: bool, detail: str = "") -> None:
@@ -25,6 +29,10 @@ def test(name: str, condition: bool, detail: str = "") -> None:
 
 def run_hook(script: str, payload: dict[str, str], *, env: dict[str, str] | None = None) -> dict[str, object]:
     merged_env = os.environ.copy()
+    merged_env.update({
+        "OVERWATCH_STATE_DIR": str(STATE_DIR),
+        "OVERWATCH_LOG_FILE": str(LOG_FILE),
+    })
     if env:
         merged_env.update(env)
     proc = subprocess.run(
@@ -272,6 +280,20 @@ def test_prompt_hook_injects_todo_bridge_reminder_when_prompt_mentions_todo() ->
         test("prompt hook tells session to run todo-status", "todo-status" in context, context)
         test("prompt hook tells session to use todo-start", "todo-start" in context, context)
         test("prompt hook does not create project anchor dir", not (project / ".anchor").exists(), str(list(project.iterdir())))
+        test("prompt hook labels Todo Bridge system message", response.get("systemMessage") == "[Anchor] Todo Bridge reminder delivered.", str(response))
+
+        unrelated = run_hook(
+            "codex_prompt.sh",
+            {
+                "session_id": sid + "-unrelated",
+                "transcript_path": "/tmp/codex-observability-transcript.jsonl",
+                "cwd": str(project),
+                "user_prompt": "我们看看还有哪些风险",
+            },
+            env={"HOME": str(home)},
+        )
+        unrelated_context = str(unrelated.get("hookSpecificOutput", {}).get("additionalContext", ""))
+        test("prompt hook ignores non-TODO follow-up prompts", "[Anchor Todo Bridge]" not in unrelated_context, unrelated_context)
 
 
 def test_codex_prompt_has_no_eric_local_status_path() -> None:
