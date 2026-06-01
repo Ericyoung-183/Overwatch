@@ -48,6 +48,39 @@ render_anchor_context() {
     "${args[@]}" 2>/dev/null || true
 }
 
+anchor_helper_path() {
+    local helper="${ANCHOR_HELPER:-}"
+    if [ -z "$helper" ]; then
+        local installed_helper="${HOME:-}/.codex/skills/anchor/scripts/anchor.py"
+        if [ -f "$installed_helper" ]; then
+            helper="$installed_helper"
+        fi
+    fi
+    [ -n "$helper" ] && [ -f "$helper" ] && printf '%s\n' "$helper"
+}
+
+render_anchor_todo_bridge_reminder() {
+    case "${ANCHOR_DISABLE:-}" in
+        1|true|TRUE|yes|YES) return 0 ;;
+    esac
+    [ -z "$(anchor_helper_path)" ] && return 0
+    USER_PROMPT="$USER_PROMPT" python3 - <<'PY'
+import os
+prompt = os.environ.get("USER_PROMPT", "")
+lower = prompt.lower()
+needles = ["todo", "待办", "任务清单", "还有哪些", "没做", "继续处理", "未完成"]
+if not any(needle in lower or needle in prompt for needle in needles):
+    raise SystemExit(0)
+print(
+    "[Anchor Todo Bridge]\n"
+    "User prompt mentions project TODO. Before answering, use the Anchor helper for TODO work: "
+    "run `todo-status --cwd <project>`; if it reports multiple candidates, ask the user to choose and run "
+    "`todo-configure`; if open items should be processed, run `todo-start`; after a TODO-backed agenda closes, "
+    "run `todo-sync`. Do not hand-edit `.anchor/config.json` or treat non-canonical TODO files as active sources."
+)
+PY
+}
+
 find_transcript() {
     OW_SID="$SESSION_ID" python3 - <<'PY'
 import os
@@ -136,6 +169,9 @@ print('true' if prompt in [k.lower() for k in TRIGGER_KEYWORDS] else 'false')
 
 if [ "$MATCHED" != "true" ]; then
     ANCHOR_CONTEXT=$(render_anchor_context)
+    if [ -z "$ANCHOR_CONTEXT" ]; then
+        ANCHOR_CONTEXT=$(render_anchor_todo_bridge_reminder)
+    fi
     SAFE_SESSION_ID=$(printf '%s' "$SESSION_ID" | tr -c 'A-Za-z0-9_.-' '_')
     STATUS_RELAY_DIR="${OVERWATCH_CODEX_STATUS_RELAY_DIR:-}"
     STATUS_RELAY_FILE="${OVERWATCH_CODEX_STATUS_RELAY_FILE:-}"

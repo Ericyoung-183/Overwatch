@@ -246,6 +246,34 @@ def test_prompt_hook_injects_anchor_context_when_helper_is_configured() -> None:
         test("prompt hook ignores unrelated Anchor state", "hookSpecificOutput" not in unrelated, str(unrelated))
 
 
+def test_prompt_hook_injects_todo_bridge_reminder_when_prompt_mentions_todo() -> None:
+    sid = "codex-observability-todo-bridge"
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp) / "home"
+        helper = home / ".codex" / "skills" / "anchor" / "scripts" / "anchor.py"
+        helper.parent.mkdir(parents=True)
+        helper.write_text("raise SystemExit(2)\n", encoding="utf-8")
+        project = Path(tmp) / "project"
+        project.mkdir()
+
+        response = run_hook(
+            "codex_prompt.sh",
+            {
+                "session_id": sid,
+                "transcript_path": "/tmp/codex-observability-transcript.jsonl",
+                "cwd": str(project),
+                "user_prompt": "我们看看还有哪些 TODO 没做",
+            },
+            env={"HOME": str(home)},
+        )
+
+        context = str(response.get("hookSpecificOutput", {}).get("additionalContext", ""))
+        test("prompt hook injects Todo Bridge marker", "[Anchor Todo Bridge]" in context, context)
+        test("prompt hook tells session to run todo-status", "todo-status" in context, context)
+        test("prompt hook tells session to use todo-start", "todo-start" in context, context)
+        test("prompt hook does not create project anchor dir", not (project / ".anchor").exists(), str(list(project.iterdir())))
+
+
 def test_codex_prompt_has_no_eric_local_status_path() -> None:
     text = (ROOT / "hooks" / "codex_prompt.sh").read_text(encoding="utf-8")
     test("codex prompt uses configurable status relay", "OVERWATCH_CODEX_STATUS_RELAY_DIR" in text)
@@ -258,5 +286,6 @@ if __name__ == "__main__":
     test_stop_hook_records_skip_reason_when_transcript_missing()
     test_prompt_hook_surfaces_previous_stop_says_once()
     test_prompt_hook_injects_anchor_context_when_helper_is_configured()
+    test_prompt_hook_injects_todo_bridge_reminder_when_prompt_mentions_todo()
     test_codex_prompt_has_no_eric_local_status_path()
     print("codex hook observability tests passed")
