@@ -13,7 +13,7 @@ You <-> Claude Code (Builder)     Overwatch (Independent Reviewer)
      |  [every N turns]                   |
      |  --------------------------------> | reads full transcript
      |                                    | builds context (summary + recent)
-     |                                    | calls Claude API
+     |                                    | calls configured review backend
      |  <-------------------------------- | injects review via hook
      |  Builder presents & discusses      |
 ```
@@ -56,7 +56,7 @@ For Codex Desktop or Codex CLI, Overwatch can use `OVERWATCH_BACKEND=codex_exec`
 
 ```bash
 git clone https://github.com/Ericyoung-183/Overwatch.git
-cd overwatch
+cd Overwatch
 ./install.sh
 # Restart Claude Code — done!
 ```
@@ -69,7 +69,7 @@ The Claude Code installer automatically:
 
 ```bash
 git clone https://github.com/Ericyoung-183/Overwatch.git
-cd overwatch
+cd Overwatch
 ./install_codex.sh
 # Restart Codex — done!
 ```
@@ -159,7 +159,7 @@ TRIGGER_KEYWORDS = ["overwatch", "second opinion", "第二意见"]  # Manual tri
 | `OVERWATCH_CODEX_STATUS_RELAY_DIR` | Optional directory containing Codex status relay files named `last_stop_says_<session>.json` | unset |
 | `OVERWATCH_CODEX_STATUS_RELAY_FILE` | Optional single status relay file for the current Codex session | unset |
 | `OVERWATCH_PENDING_TTL_HOURS` | Hours a pending auto-review marker remains auto-deliverable; `0` disables expiry | `72` |
-| `ANTHROPIC_API_KEY` | API authentication | (required) |
+| `ANTHROPIC_API_KEY` | API backend authentication; not required for Codex `codex_exec` | required when `OVERWATCH_BACKEND=api` |
 | `ANTHROPIC_BASE_URL` | API endpoint | `https://api.anthropic.com` |
 | `OVERWATCH_REVIEW_MODEL` | Override review model | from `ANTHROPIC_MODEL` |
 | `OVERWATCH_SUMMARY_MODEL` | Override summary model | from `ANTHROPIC_DEFAULT_HAIKU_MODEL` |
