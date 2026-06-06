@@ -27,6 +27,8 @@ Overwatch hooks into Claude Code or Codex Desktop's event system. After every N 
 
 The Builder then presents the review and responds to each point.
 
+Pending auto-review delivery markers expire after 72 hours by default. Expiry only removes the delivery marker, not the saved review file, so old reviews remain available without surprising a resumed session days later.
+
 ### Prerequisites
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or Codex installed and working
@@ -151,6 +153,7 @@ TRIGGER_KEYWORDS = ["overwatch", "second opinion", "第二意见"]  # Manual tri
 | `OVERWATCH_CODEX_REASONING_EFFORT` | Codex `model_reasoning_effort` for nested reviews | `xhigh` |
 | `OVERWATCH_CODEX_STATUS_RELAY_DIR` | Optional directory containing Codex status relay files named `last_stop_says_<session>.json` | unset |
 | `OVERWATCH_CODEX_STATUS_RELAY_FILE` | Optional single status relay file for the current Codex session | unset |
+| `OVERWATCH_PENDING_TTL_HOURS` | Hours a pending auto-review marker remains auto-deliverable; `0` disables expiry | `72` |
 | `ANTHROPIC_API_KEY` | API authentication | (required) |
 | `ANTHROPIC_BASE_URL` | API endpoint | `https://api.anthropic.com` |
 | `OVERWATCH_REVIEW_MODEL` | Override review model | from `ANTHROPIC_MODEL` |
@@ -167,6 +170,7 @@ overwatch/
 ├── config.py              # All configuration in one place
 ├── api_client.py          # Claude API client (zero external dependencies)
 ├── codex_exec_client.py   # Codex exec backend (uses existing Codex login)
+├── pending_review.py      # Pending auto-review marker TTL and cleanup
 ├── context_manager.py     # Rolling summary + recent window management
 ├── prompts.py             # Review framework and prompt templates
 ├── adapters/

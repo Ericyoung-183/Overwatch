@@ -6,6 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 python3 "$ROOT/tests/test_public_release_clean.py"
+python3 "$ROOT/tests/test_pending_review.py"
 python3 "$ROOT/tests/test_config_runtime_defaults.py"
 python3 "$ROOT/tests/test_claude_hook_compat.py"
 python3 "$ROOT/tests/test_codex_installer.py"
@@ -30,6 +31,7 @@ python3 -m py_compile \
   "$ROOT/overwatch.py" \
   "$ROOT/context_manager.py" \
   "$ROOT/codex_exec_client.py" \
+  "$ROOT/pending_review.py" \
   "$ROOT/adapters/__init__.py" \
   "$ROOT/adapters/claude_code.py" \
   "$ROOT/adapters/codex.py" \

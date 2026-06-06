@@ -76,9 +76,26 @@ os.replace(tmp, map_file)
 PENDING_FILE="${STATE_DIR}/auto_review_pending_${SESSION_ID}.json"
 LOCK_FILE="${STATE_DIR}/${SESSION_ID}.lock"
 if [ -f "$PENDING_FILE" ]; then
-    OUTPUT='{"continue": true, "systemMessage": "⏱ '"$(date +%H:%M:%S)"' | [Overwatch] Auto-review ready."}'
-elif [ -f "$LOCK_FILE" ]; then
+    PENDING_ACTION=$(OW_DIR="$OVERWATCH_DIR" OW_PENDING="$PENDING_FILE" python3 - <<'PY' 2>/dev/null || echo "deliver"
+import os
+import sys
+
+sys.path.insert(0, os.environ["OW_DIR"])
+from pending_review import cleanup_expired_pending
+
+status = cleanup_expired_pending(os.environ["OW_PENDING"])
+print("deliver" if status.get("deliverable") else "expired")
+PY
+)
+    if [ "$PENDING_ACTION" = "deliver" ]; then
+        OUTPUT='{"continue": true, "systemMessage": "⏱ '"$(date +%H:%M:%S)"' | [Overwatch] Auto-review ready."}'
+        exit 0
+    fi
+    echo "[Overwatch Hook $(date +%H:%M:%S)] Expired auto-review pending discarded (session=$SESSION_ID)" >> "$LOG_FILE" 2>&1
+fi
+if [ -f "$LOCK_FILE" ]; then
     OUTPUT='{"continue": true, "systemMessage": "⏱ '"$(date +%H:%M:%S)"' | [Overwatch] Review in progress..."}'
+    exit 0
 fi
 
 # Skip if last user message was a manual trigger (already handled by UserPromptSubmit hook)

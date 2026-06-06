@@ -102,6 +102,15 @@ def test_claude_stop_still_uses_system_message_status() -> None:
     test("Claude stop message mentions Overwatch", "[Overwatch]" in message, message)
 
 
+def test_claude_stop_does_not_dispatch_when_pending_review_exists() -> None:
+    text = (ROOT / "hooks" / "claude_code_stop.sh").read_text(encoding="utf-8")
+    pending_start = text.index('if [ -f "$PENDING_FILE" ]; then')
+    lock_start = text.index('if [ -f "$LOCK_FILE" ]; then', pending_start)
+    pending_branch = text[pending_start:lock_start]
+
+    test("Claude stop exits after fresh pending review", "exit 0" in pending_branch, pending_branch)
+
+
 def test_claude_manual_trigger_uses_shared_additional_context_protocol() -> None:
     trigger_file = STATE_DIR / "latest_trigger.json"
     original_trigger = read_optional(trigger_file)
@@ -127,8 +136,52 @@ def test_claude_manual_trigger_uses_shared_additional_context_protocol() -> None
     test("Claude manual trigger test restores latest trigger", read_optional(trigger_file) == original_trigger)
 
 
+def test_claude_prompt_delivers_fresh_pending_review() -> None:
+    sid = "claude-compat-fresh-pending-" + uuid.uuid4().hex
+    trigger_file = STATE_DIR / "latest_trigger.json"
+    pending_file = STATE_DIR / f"auto_review_pending_{sid}.json"
+    review_file = STATE_DIR / f"{sid}-review.md"
+    original_trigger = read_optional(trigger_file)
+    original_pending = read_optional(pending_file)
+
+    review_file.write_text("CLAUDE FRESH AUTO REVIEW BODY", encoding="utf-8")
+    pending_file.write_text(
+        json.dumps(
+            {
+                "review_path": str(review_file),
+                "session_id": sid,
+                "created_at": 4_102_444_800,
+                "ttl_hours": 72,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        response = run_hook(
+            "claude_code_prompt.sh",
+            {
+                "session_id": sid,
+                "transcript_path": "/tmp/claude-compat.jsonl",
+                "cwd": "/tmp/claude-project",
+                "user_prompt": "normal message",
+            },
+        )
+    finally:
+        restore_optional(trigger_file, original_trigger)
+        restore_optional(pending_file, original_pending)
+        review_file.unlink(missing_ok=True)
+
+    context = str(response.get("hookSpecificOutput", {}).get("additionalContext", ""))
+    test("Claude prompt consumes fresh pending marker", not pending_file.exists(), str(response))
+    test("Claude prompt marks auto-review delivery", "[Overwatch Auto-Review]" in context, context)
+    test("Claude prompt delivers fresh review body", "CLAUDE FRESH AUTO REVIEW BODY" in context, context)
+
+
 if __name__ == "__main__":
     test_non_codex_config_defaults_are_claude_api()
     test_claude_stop_still_uses_system_message_status()
+    test_claude_stop_does_not_dispatch_when_pending_review_exists()
     test_claude_manual_trigger_uses_shared_additional_context_protocol()
+    test_claude_prompt_delivers_fresh_pending_review()
     print("claude hook compatibility tests passed")

@@ -26,6 +26,7 @@ from config import (
 from api_client import call_claude, call_claude_with_tools
 from adapters import get_adapter
 from context_manager import load_state, save_state, build_review_context
+from pending_review import write_pending_marker
 from prompts import build_review_prompt
 
 
@@ -78,10 +79,7 @@ def _acquire_lock(session_id: str):
 def _write_pending_marker(session_id: str, review_path: str):
     """Write pending auto-review for the UserPromptSubmit hook to deliver."""
     from config import STATE_DIR
-    import json as _json
-    pending_path = os.path.join(STATE_DIR, f"auto_review_pending_{session_id}.json")
-    with open(pending_path, "w") as f:
-        _json.dump({"review_path": review_path, "session_id": session_id}, f)
+    return write_pending_marker(state_dir=STATE_DIR, session_id=session_id, review_path=review_path)
 
 
 def _read_last_review(session_id: str) -> str:

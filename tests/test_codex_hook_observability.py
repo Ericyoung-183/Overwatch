@@ -114,6 +114,57 @@ def test_stop_hook_records_skip_reason_when_transcript_missing() -> None:
         status_file.unlink(missing_ok=True)
 
 
+def test_stop_hook_discards_expired_pending_instead_of_skipping() -> None:
+    sid = "codex-observability-expired-stop"
+    pending_file = STATE_DIR / f"auto_review_pending_{sid}.json"
+    status_file = STATE_DIR / f"stop_status_{sid}.json"
+    pending_file.unlink(missing_ok=True)
+    status_file.unlink(missing_ok=True)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        transcript = Path(tmp) / "codex.jsonl"
+        transcript.write_text(
+            json.dumps(
+                {
+                    "type": "response_item",
+                    "timestamp": "2026-06-06T00:00:00Z",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "hello"}],
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        pending_file.write_text(
+            json.dumps(
+                {
+                    "review_path": str(Path(tmp) / "stale-review.md"),
+                    "session_id": sid,
+                    "created_at": 1,
+                    "ttl_hours": 72,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        run_hook(
+            "codex_stop.sh",
+            {
+                "session_id": sid,
+                "transcript_path": str(transcript),
+                "cwd": "/tmp/codex-observability-project",
+            },
+        )
+        status = json.loads(status_file.read_text(encoding="utf-8"))
+
+    test("stop hook removes expired pending marker", not pending_file.exists(), str(status))
+    test("stop hook does not skip because of expired pending", status.get("reason") != "pending_review", str(status))
+    test("stop hook continues normal threshold path", status.get("reason") == "below_min_threshold", str(status))
+
+
 def test_prompt_hook_surfaces_previous_stop_says_once() -> None:
     sid = "codex-observability-stop-says"
     cwd = "/tmp/codex-observability-project"
@@ -145,6 +196,92 @@ def test_prompt_hook_surfaces_previous_stop_says_once() -> None:
         test("prompt hook surfaces previous Stop Says", "[Stop Says Previous Turn]" in context, context)
         test("prompt hook includes Stop Says message", "Stop Says TEST" in context, context)
         test("prompt hook consumes previous Stop Says", not stop_file.exists(), "status file still exists")
+
+
+def test_prompt_hook_delivers_fresh_pending_review() -> None:
+    sid = "codex-observability-fresh-prompt"
+    pending_file = STATE_DIR / f"auto_review_pending_{sid}.json"
+    review_file = STATE_DIR / f"{sid}-review.md"
+    trigger_file = STATE_DIR / "latest_trigger.json"
+    original_trigger = trigger_file.read_text(encoding="utf-8") if trigger_file.exists() else ""
+    pending_file.unlink(missing_ok=True)
+    review_file.write_text("FRESH AUTO REVIEW BODY", encoding="utf-8")
+    pending_file.write_text(
+        json.dumps(
+            {
+                "review_path": str(review_file),
+                "session_id": sid,
+                "created_at": 4_102_444_800,
+                "ttl_hours": 72,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        response = run_hook(
+            "codex_prompt.sh",
+            {
+                "session_id": sid,
+                "transcript_path": "/tmp/codex-observability-transcript.jsonl",
+                "cwd": "/tmp/codex-observability-project",
+                "user_prompt": "normal message",
+            },
+        )
+    finally:
+        review_file.unlink(missing_ok=True)
+        if original_trigger:
+            trigger_file.write_text(original_trigger, encoding="utf-8")
+        else:
+            trigger_file.unlink(missing_ok=True)
+
+    context = str(response.get("hookSpecificOutput", {}).get("additionalContext", ""))
+    test("prompt hook consumes fresh pending marker", not pending_file.exists(), str(response))
+    test("prompt hook marks auto-review delivery", "[Overwatch Auto-Review]" in context, context)
+    test("prompt hook delivers fresh review body", "FRESH AUTO REVIEW BODY" in context, context)
+
+
+def test_prompt_hook_discards_expired_pending_before_manual_trigger() -> None:
+    sid = "codex-observability-expired-prompt"
+    pending_file = STATE_DIR / f"auto_review_pending_{sid}.json"
+    review_file = STATE_DIR / f"{sid}-stale-review.md"
+    trigger_file = STATE_DIR / "latest_trigger.json"
+    original_trigger = trigger_file.read_text(encoding="utf-8") if trigger_file.exists() else ""
+    pending_file.unlink(missing_ok=True)
+    review_file.write_text("STALE AUTO REVIEW BODY", encoding="utf-8")
+    pending_file.write_text(
+        json.dumps(
+            {
+                "review_path": str(review_file),
+                "session_id": sid,
+                "created_at": 1,
+                "ttl_hours": 72,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        response = run_hook(
+            "codex_prompt.sh",
+            {
+                "session_id": sid,
+                "transcript_path": "/tmp/codex-observability-transcript.jsonl",
+                "cwd": "/tmp/codex-observability-project",
+                "user_prompt": "overwatch",
+            },
+        )
+    finally:
+        review_file.unlink(missing_ok=True)
+        if original_trigger:
+            trigger_file.write_text(original_trigger, encoding="utf-8")
+        else:
+            trigger_file.unlink(missing_ok=True)
+
+    context = str(response.get("hookSpecificOutput", {}).get("additionalContext", ""))
+    test("prompt hook removes expired pending marker", not pending_file.exists(), context)
+    test("prompt hook does not deliver stale auto-review", "STALE AUTO REVIEW BODY" not in context, context)
+    test("prompt hook continues to manual trigger", "[Overwatch Manual Trigger]" in context, context)
 
 
 def test_prompt_hook_injects_anchor_context_when_helper_is_configured() -> None:
@@ -306,7 +443,10 @@ if __name__ == "__main__":
     test_find_session_uses_codex_thread_id()
     test_prompt_hook_updates_session_map()
     test_stop_hook_records_skip_reason_when_transcript_missing()
+    test_stop_hook_discards_expired_pending_instead_of_skipping()
     test_prompt_hook_surfaces_previous_stop_says_once()
+    test_prompt_hook_delivers_fresh_pending_review()
+    test_prompt_hook_discards_expired_pending_before_manual_trigger()
     test_prompt_hook_injects_anchor_context_when_helper_is_configured()
     test_prompt_hook_injects_todo_bridge_reminder_when_prompt_mentions_todo()
     test_codex_prompt_has_no_eric_local_status_path()

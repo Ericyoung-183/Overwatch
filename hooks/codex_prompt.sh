@@ -132,7 +132,21 @@ PENDING_FILE="${STATE_DIR}/auto_review_pending_${SESSION_ID}.json"
 { echo "[Overwatch Codex Prompt $(date +%H:%M:%S)] Hook fired (session=$SESSION_ID, pending_exists=$([ -f "$PENDING_FILE" ] && echo yes || echo no))" >> "$LOG_FILE"; } 2>/dev/null || true
 
 if [ -n "$SESSION_ID" ] && [ -f "$PENDING_FILE" ]; then
-    OUTPUT=$(OW_STATE="$STATE_DIR" OW_PENDING="$PENDING_FILE" OW_DIR="$OVERWATCH_DIR" python3 -c "
+    PENDING_ACTION=$(OW_DIR="$OVERWATCH_DIR" OW_PENDING="$PENDING_FILE" python3 - <<'PY' 2>/dev/null || echo "deliver"
+import os
+import sys
+
+sys.path.insert(0, os.environ["OW_DIR"])
+from pending_review import cleanup_expired_pending
+
+status = cleanup_expired_pending(os.environ["OW_PENDING"])
+print("deliver" if status.get("deliverable") else "expired")
+PY
+)
+    if [ "$PENDING_ACTION" != "deliver" ]; then
+        { echo "[Overwatch Codex Prompt $(date +%H:%M:%S)] Expired auto-review pending discarded (session=$SESSION_ID)" >> "$LOG_FILE"; } 2>/dev/null || true
+    else
+    OUTPUT=$(OW_STATE="$STATE_DIR" OW_PENDING="$PENDING_FILE" OW_DIR="$OVERWATCH_DIR" python3 - <<'PY' 2>/dev/null || echo '{"continue": true, "systemMessage": "[Overwatch] Auto-review ready."}'
 import json, os, sys
 state_dir = os.environ['OW_STATE']
 sys.path.insert(0, os.environ['OW_DIR'])
@@ -161,9 +175,11 @@ print(json.dumps({
         )
     }
 }, ensure_ascii=False))
-" 2>/dev/null || echo '{"continue": true, "systemMessage": "[Overwatch] Auto-review ready."}')
+PY
+)
     rm -f "$PENDING_FILE"
     exit 0
+    fi
 fi
 
 USER_PROMPT=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('user_prompt') or d.get('prompt') or d.get('message') or '')" 2>/dev/null || echo "")

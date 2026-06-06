@@ -145,12 +145,27 @@ os.replace(tmp, map_file)
 PENDING_FILE="${STATE_DIR}/auto_review_pending_${SESSION_ID}.json"
 LOCK_FILE="${STATE_DIR}/${SESSION_ID}.lock"
 if [ -f "$PENDING_FILE" ]; then
-    # Keep Stop UI quiet. The prompt hook delivers the review on the next turn,
-    # and stop-says summarizes the state in one final status line.
-    write_stop_status "skipped" "pending_review"
-    OUTPUT='{"continue": true}'
-    exit 0
-elif [ -f "$LOCK_FILE" ]; then
+    PENDING_ACTION=$(OW_DIR="$OVERWATCH_DIR" OW_PENDING="$PENDING_FILE" python3 - <<'PY' 2>/dev/null || echo "deliver"
+import os
+import sys
+
+sys.path.insert(0, os.environ["OW_DIR"])
+from pending_review import cleanup_expired_pending
+
+status = cleanup_expired_pending(os.environ["OW_PENDING"])
+print("deliver" if status.get("deliverable") else "expired")
+PY
+)
+    if [ "$PENDING_ACTION" = "deliver" ]; then
+        # Keep Stop UI quiet. The prompt hook delivers the review on the next turn,
+        # and stop-says summarizes the state in one final status line.
+        write_stop_status "skipped" "pending_review"
+        OUTPUT='{"continue": true}'
+        exit 0
+    fi
+    { echo "[Overwatch Codex Stop] Expired auto-review pending discarded (session=$SESSION_ID)" >> "$LOG_FILE"; } 2>/dev/null || true
+fi
+if [ -f "$LOCK_FILE" ]; then
     write_stop_status "skipped" "review_in_progress"
     OUTPUT='{"continue": true}'
     exit 0
