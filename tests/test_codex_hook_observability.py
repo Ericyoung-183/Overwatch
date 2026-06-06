@@ -46,6 +46,21 @@ def run_hook(script: str, payload: dict[str, str], *, env: dict[str, str] | None
     return json.loads(proc.stdout)
 
 
+def codex_user_event(text: str) -> str:
+    return json.dumps(
+        {
+            "type": "response_item",
+            "timestamp": "2026-06-06T00:00:00Z",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": text}],
+            },
+        },
+        ensure_ascii=False,
+    )
+
+
 def test_find_session_uses_codex_thread_id() -> None:
     sid = "codex-observability-find-session"
     with tempfile.TemporaryDirectory() as tmp:
@@ -163,6 +178,70 @@ def test_stop_hook_discards_expired_pending_instead_of_skipping() -> None:
     test("stop hook removes expired pending marker", not pending_file.exists(), str(status))
     test("stop hook does not skip because of expired pending", status.get("reason") != "pending_review", str(status))
     test("stop hook continues normal threshold path", status.get("reason") == "below_min_threshold", str(status))
+
+
+def test_stop_hook_uses_smart_trigger_for_codex_review_request() -> None:
+    sid = "codex-observability-smart-trigger"
+    status_file = STATE_DIR / f"stop_status_{sid}.json"
+    status_file.unlink(missing_ok=True)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        transcript = Path(tmp) / "codex.jsonl"
+        transcript.write_text(
+            "\n".join(
+                [
+                    codex_user_event("normal 1"),
+                    codex_user_event("normal 2"),
+                    codex_user_event("normal 3"),
+                    codex_user_event("normal 4"),
+                    codex_user_event("normal 5"),
+                    codex_user_event("请完整检查一下这轮修改"),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        run_hook(
+            "codex_stop.sh",
+            {
+                "session_id": sid,
+                "transcript_path": str(transcript),
+                "cwd": "/tmp/codex-observability-project",
+            },
+            env={"OVERWATCH_TEST_DISABLE_DISPATCH": "1"},
+        )
+        status = json.loads(status_file.read_text(encoding="utf-8"))
+
+    test("Codex smart trigger dispatches review request", status.get("reason") == "review_dispatched", str(status))
+    test("Codex smart trigger records current turns", status.get("current_turns") == 6, str(status))
+
+
+def test_stop_hook_waits_without_codex_smart_signal() -> None:
+    sid = "codex-observability-no-smart-signal"
+    status_file = STATE_DIR / f"stop_status_{sid}.json"
+    status_file.unlink(missing_ok=True)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        transcript = Path(tmp) / "codex.jsonl"
+        transcript.write_text(
+            "\n".join([codex_user_event(f"normal {i}") for i in range(1, 7)]) + "\n",
+            encoding="utf-8",
+        )
+
+        run_hook(
+            "codex_stop.sh",
+            {
+                "session_id": sid,
+                "transcript_path": str(transcript),
+                "cwd": "/tmp/codex-observability-project",
+            },
+            env={"OVERWATCH_TEST_DISABLE_DISPATCH": "1"},
+        )
+        status = json.loads(status_file.read_text(encoding="utf-8"))
+
+    test("Codex waits without smart signal", status.get("reason") == "below_max_threshold", str(status))
+    test("Codex wait path records current turns", status.get("current_turns") == 6, str(status))
 
 
 def test_prompt_hook_surfaces_previous_stop_says_once() -> None:
@@ -444,6 +523,8 @@ if __name__ == "__main__":
     test_prompt_hook_updates_session_map()
     test_stop_hook_records_skip_reason_when_transcript_missing()
     test_stop_hook_discards_expired_pending_instead_of_skipping()
+    test_stop_hook_uses_smart_trigger_for_codex_review_request()
+    test_stop_hook_waits_without_codex_smart_signal()
     test_prompt_hook_surfaces_previous_stop_says_once()
     test_prompt_hook_delivers_fresh_pending_review()
     test_prompt_hook_discards_expired_pending_before_manual_trigger()

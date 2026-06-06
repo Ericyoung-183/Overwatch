@@ -18,7 +18,7 @@ You <-> Claude Code (Builder)     Overwatch (Independent Reviewer)
      |  Builder presents & discusses      |
 ```
 
-Overwatch hooks into Claude Code or Codex Desktop's event system. After every N user turns (default: 10), it:
+Overwatch hooks into Claude Code or Codex Desktop's event system. Both runtimes use the same trigger policy: reviews never fire below the minimum turn floor (default: 5), always fire at the hard ceiling (default: 15), and can fire early between those bounds when smart signals are detected.
 
 1. **Parses** the full session JSONL transcript
 2. **Builds context** using a rolling summary (for older turns) + verbatim recent window
@@ -28,6 +28,8 @@ Overwatch hooks into Claude Code or Codex Desktop's event system. After every N 
 The Builder then presents the review and responds to each point.
 
 Pending auto-review delivery markers expire after 72 hours by default. Expiry only removes the delivery marker, not the saved review file, so old reviews remain available without surprising a resumed session days later.
+
+Smart trigger signals are shared across Claude Code and Codex: explicit review/check requests, user corrections, dense file-edit activity, and recent `git commit` / `git push` boundaries.
 
 ### Prerequisites
 
@@ -133,8 +135,11 @@ Works for coding, research, analysis, documentation — any AI-assisted work. Re
 Edit `config.py`:
 
 ```python
-TURN_THRESHOLD = 10        # Auto-review every N turns
-RECENT_WINDOW_SIZE = 10    # Keep last N exchanges verbatim
+TURN_THRESHOLD = 10        # Baseline interval when SMART_TRIGGER is disabled
+SMART_TRIGGER = True       # Enable early reviews between min and max when risk signals appear
+TURN_THRESHOLD_MIN = 5     # Never auto-review below this many new user turns
+TURN_THRESHOLD_MAX = 15    # Always auto-review at or above this many new user turns
+RECENT_WINDOW_SIZE = 20    # Keep last N exchanges verbatim
 REVIEW_BACKEND = "api"     # "api" or "codex_exec"; Codex runtimes default to codex_exec
 REVIEW_MODEL = "claude-sonnet-4-20250514"  # Model for reviews; gpt-5.5 for codex_exec
 CODEX_REASONING_EFFORT = "xhigh"  # Highest Codex reasoning effort for codex_exec
@@ -171,6 +176,7 @@ overwatch/
 ├── api_client.py          # Claude API client (zero external dependencies)
 ├── codex_exec_client.py   # Codex exec backend (uses existing Codex login)
 ├── pending_review.py      # Pending auto-review marker TTL and cleanup
+├── trigger_policy.py      # Shared auto-review trigger policy for Claude Code and Codex
 ├── context_manager.py     # Rolling summary + recent window management
 ├── prompts.py             # Review framework and prompt templates
 ├── adapters/
@@ -200,6 +206,7 @@ overwatch/
 - **Non-blocking hooks**: Stop hook always returns `{"continue": true}` within 5 seconds. Reviews run asynchronously.
 - **File-based state**: No database. State is JSON files in `state/`. Reviews are Markdown in `reviews/`.
 - **Runtime separation**: Claude Code keeps the Claude/API default path. Codex app/CLI can use the Codex adapter plus `codex_exec` backend without changing Claude defaults.
+- **Shared trigger policy**: Claude Code and Codex use the same `trigger_policy.py` decision logic; runtime hooks only adapt transcript parsing and review dispatch.
 
 ## Custom Adapters
 

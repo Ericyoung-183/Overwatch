@@ -10,12 +10,6 @@ set -euo pipefail
 OVERWATCH_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OVERWATCH_PY="${OVERWATCH_DIR}/overwatch.py"
 STATE_DIR="${OVERWATCH_DIR}/state"
-# Read throttle config
-read TURN_THRESHOLD SMART_TRIGGER TURN_MIN TURN_MAX <<< $(python3 -c "
-import sys; sys.path.insert(0,'$OVERWATCH_DIR')
-from config import TURN_THRESHOLD, SMART_TRIGGER, TURN_THRESHOLD_MIN, TURN_THRESHOLD_MAX
-print(TURN_THRESHOLD, SMART_TRIGGER, TURN_THRESHOLD_MIN, TURN_THRESHOLD_MAX)
-" 2>/dev/null || echo "10 False 5 15")
 LOG_FILE="${OVERWATCH_DIR}/overwatch.log"
 
 # Default output
@@ -132,92 +126,60 @@ if [ -f "$STATE_FILE" ]; then
     REVIEW_COUNT=$(OW_FILE="$STATE_FILE" python3 -c "import json,os; print(json.load(open(os.environ['OW_FILE'])).get('review_count',0))" 2>/dev/null || echo "0")
 fi
 
-# Parse transcript ONCE — reuse for both turn counting and smart trigger
-PARSE_OUTPUT=$(OW_TRANSCRIPT="$TRANSCRIPT_PATH" python3 -c "
-import os, sys, json; sys.path.insert(0, '$OVERWATCH_DIR')
-from config import ADAPTER
+# Shared trigger policy: below min waits, hard ceiling triggers, smart signals
+# can trigger between min and max for both Claude Code and Codex.
+TRIGGER_DECISION=$(OW_DIR="$OVERWATCH_DIR" OW_TRANSCRIPT="$TRANSCRIPT_PATH" OW_LAST_REVIEWED="$LAST_REVIEWED" OW_REVIEW_COUNT="$REVIEW_COUNT" \
+OVERWATCH_ADAPTER=claude_code python3 - <<'PY' 2>/dev/null || echo '{"should_trigger": false, "reason": "trigger_policy_error", "current_turns": 0, "last_reviewed_turn": 0, "review_count": 0, "remaining": 0, "signal": ""}'
+import json
+import os
+import sys
+
+sys.path.insert(0, os.environ["OW_DIR"])
 from adapters import get_adapter
-parse = get_adapter(ADAPTER)
-turns = parse(os.environ['OW_TRANSCRIPT'])
-user_count = len([t for t in turns if t.role == 'user'])
-# Serialize turns for smart trigger (only needed fields to keep payload small)
-tool_names = [t.tool_name for t in turns if t.role == 'tool_use']
-user_contents = [t.content[:500] for t in turns if t.role == 'user']
-bash_contents = [t.content[:300] for t in turns if t.role == 'tool_use' and t.tool_name == 'Bash']
-print(json.dumps({'user_count': user_count, 'tool_names': tool_names, 'user_contents': user_contents, 'bash_contents': bash_contents}))
-" 2>/dev/null || echo '{}')
+from config import ADAPTER, SMART_TRIGGER, TURN_THRESHOLD, TURN_THRESHOLD_MAX, TURN_THRESHOLD_MIN
+from trigger_policy import evaluate_trigger, summarize_turns_for_policy
 
-CURRENT_TURNS=$(echo "$PARSE_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('user_count',0))" 2>/dev/null || echo "0")
+turns = get_adapter(ADAPTER)(os.environ["OW_TRANSCRIPT"])
+summary = summarize_turns_for_policy(turns)
+decision = evaluate_trigger(
+    current_turns=summary["user_count"],
+    last_reviewed_turn=os.environ.get("OW_LAST_REVIEWED", "0"),
+    review_count=os.environ.get("OW_REVIEW_COUNT", "0"),
+    tool_names=summary["tool_names"],
+    user_contents=summary["user_contents"],
+    command_contents=summary["command_contents"],
+    turn_threshold=TURN_THRESHOLD,
+    smart_trigger=SMART_TRIGGER,
+    turn_min=TURN_THRESHOLD_MIN,
+    turn_max=TURN_THRESHOLD_MAX,
+)
+print(json.dumps(decision, ensure_ascii=False))
+PY
+)
 
-DIFF=$((CURRENT_TURNS - LAST_REVIEWED))
+SHOULD_TRIGGER=$(printf '%s' "$TRIGGER_DECISION" | python3 -c "import json,sys; print('true' if json.load(sys.stdin).get('should_trigger') else 'false')" 2>/dev/null || echo "false")
+DECISION_REASON=$(printf '%s' "$TRIGGER_DECISION" | python3 -c "import json,sys; print(json.load(sys.stdin).get('reason','trigger_policy_error'))" 2>/dev/null || echo "trigger_policy_error")
+CURRENT_TURNS=$(printf '%s' "$TRIGGER_DECISION" | python3 -c "import json,sys; print(json.load(sys.stdin).get('current_turns',0))" 2>/dev/null || echo "0")
+REMAINING=$(printf '%s' "$TRIGGER_DECISION" | python3 -c "import json,sys; print(json.load(sys.stdin).get('remaining',0))" 2>/dev/null || echo "0")
+DECISION_SIGNAL=$(printf '%s' "$TRIGGER_DECISION" | python3 -c "import json,sys; print(json.load(sys.stdin).get('signal',''))" 2>/dev/null || echo "")
 
-# Smart trigger: 3-tier decision
-# Below MIN → never trigger
-# Above MAX → always trigger
-# Between MIN and MAX → trigger if content signals detected, else wait for baseline threshold
-EFFECTIVE_MAX=${TURN_MAX:-15}
-EFFECTIVE_MIN=${TURN_MIN:-5}
-
-if [ "$DIFF" -lt "$EFFECTIVE_MIN" ]; then
-    REMAINING=$((EFFECTIVE_MIN - DIFF))
-    OUTPUT="{\"continue\": true, \"systemMessage\": \"⏱ $(date +%H:%M:%S) | [Overwatch] ${REVIEW_COUNT} reviews | ${REMAINING}+ turns until next | Type 'overwatch' or '第二意见'\"}"
-    exit 0
-elif [ "$DIFF" -ge "$EFFECTIVE_MAX" ]; then
-    # Hard ceiling — force trigger
-    :
-elif [ "$SMART_TRIGGER" = "True" ]; then
-    # Between MIN and MAX — check content signals (using pre-parsed data)
-    SHOULD_TRIGGER=$(echo "$PARSE_OUTPUT" | python3 -c "
-import sys, json, re
-data = json.load(sys.stdin)
-tool_names = data.get('tool_names', [])
-user_contents = data.get('user_contents', [])
-bash_contents = data.get('bash_contents', [])
-
-# Signal 1: User review request (last 3 messages)
-review_patterns = [r'\breview\b', r'\b审查\b', r'\b诊断\b', r'检查', r'确认一下', r'看看对不对', r'完整检查']
-for text in user_contents[-3:]:
-    t = text.lower()
-    for p in review_patterns:
-        if re.search(p, t):
-            print('yes'); sys.exit(0)
-
-# Signal 2: User correction (last 3 messages)
-correction_patterns = [r'不对', r'错了', r'搞错', r'不是这样', r'重新来', r'再想想', r'\bwrong\b', r'\bnot what i\b', r'\bstill broken\b', r'\bredo\b']
-for text in user_contents[-3:]:
-    t = text.lower()
-    for p in correction_patterns:
-        if re.search(p, t):
-            print('yes'); sys.exit(0)
-
-# Signal 3: High file-change density (5+ Write/Edit in last 15)
-recent = tool_names[-15:]
-if sum(1 for n in recent if n in ('Write', 'Edit')) >= 5:
-    print('yes'); sys.exit(0)
-
-# Signal 4: git commit/push in recent Bash commands
-for cmd in bash_contents[-5:]:
-    if 'git commit' in cmd.lower() or 'git push' in cmd.lower():
-        print('yes'); sys.exit(0)
-
-print('no')
-" 2>/dev/null || echo "no")
-    if [ "$SHOULD_TRIGGER" = "no" ]; then
-        REMAINING=$((EFFECTIVE_MAX - DIFF))
+if [ "$SHOULD_TRIGGER" != "true" ]; then
+    if [ "$DECISION_REASON" = "below_min_threshold" ]; then
+        OUTPUT="{\"continue\": true, \"systemMessage\": \"⏱ $(date +%H:%M:%S) | [Overwatch] ${REVIEW_COUNT} reviews | ${REMAINING}+ turns until next | Type 'overwatch' or '第二意见'\"}"
+    else
         OUTPUT="{\"continue\": true, \"systemMessage\": \"⏱ $(date +%H:%M:%S) | [Overwatch] ${REVIEW_COUNT} reviews | ${REMAINING} turns until next | Type 'overwatch' or '第二意见'\"}"
-        exit 0
     fi
-    echo "[Overwatch Hook $(date +%H:%M:%S)] Smart trigger fired (session=$SESSION_ID, diff=$DIFF)" >> "$LOG_FILE" 2>&1
-elif [ "$DIFF" -lt "$TURN_THRESHOLD" ]; then
-    # Smart trigger off — use baseline threshold
-    REMAINING=$((TURN_THRESHOLD - DIFF))
-    OUTPUT="{\"continue\": true, \"systemMessage\": \"⏱ $(date +%H:%M:%S) | [Overwatch] ${REVIEW_COUNT} reviews | ${REMAINING} turns until next | Type 'overwatch' or '第二意见'\"}"
     exit 0
 fi
+echo "[Overwatch Hook $(date +%H:%M:%S)] Trigger fired (session=$SESSION_ID reason=$DECISION_REASON signal=$DECISION_SIGNAL)" >> "$LOG_FILE" 2>&1
 
 # Dispatch async review
 OUTPUT='{"continue": true, "systemMessage": "⏱ '"$(date +%H:%M:%S)"' | [Overwatch] Review triggered / 审查已触发..."}'
 echo "[Overwatch Hook] Dispatching auto review (session=$SESSION_ID)" >> "$LOG_FILE" 2>&1
+if [ "${OVERWATCH_TEST_DISABLE_DISPATCH:-}" = "1" ]; then
+    echo "[Overwatch Hook] Dispatch disabled by OVERWATCH_TEST_DISABLE_DISPATCH (session=$SESSION_ID)" >> "$LOG_FILE" 2>&1
+    exit 0
+fi
 nohup python3 "$OVERWATCH_PY" \
     --session-id "$SESSION_ID" \
     --transcript "$TRANSCRIPT_PATH" \

@@ -33,14 +33,17 @@ def without_codex_env() -> dict[str, str]:
     return env
 
 
-def run_hook(script: str, payload: dict[str, str]) -> dict[str, object]:
+def run_hook(script: str, payload: dict[str, str], *, env: dict[str, str] | None = None) -> dict[str, object]:
+    merged_env = without_codex_env()
+    if env:
+        merged_env.update(env)
     proc = subprocess.run(
         ["bash", str(ROOT / "hooks" / script)],
         input=json.dumps(payload),
         text=True,
         capture_output=True,
         check=True,
-        env=without_codex_env(),
+        env=merged_env,
     )
     return json.loads(proc.stdout)
 
@@ -109,6 +112,63 @@ def test_claude_stop_does_not_dispatch_when_pending_review_exists() -> None:
     pending_branch = text[pending_start:lock_start]
 
     test("Claude stop exits after fresh pending review", "exit 0" in pending_branch, pending_branch)
+
+
+def claude_user_event(text: str) -> str:
+    return json.dumps({"type": "user", "message": {"content": text}}, ensure_ascii=False)
+
+
+def test_claude_stop_uses_shared_smart_trigger_for_review_request() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        transcript = Path(tmp) / "claude-smart.jsonl"
+        transcript.write_text(
+            "\n".join(
+                [
+                    claude_user_event("normal 1"),
+                    claude_user_event("normal 2"),
+                    claude_user_event("normal 3"),
+                    claude_user_event("normal 4"),
+                    claude_user_event("normal 5"),
+                    claude_user_event("请完整检查一下这轮修改"),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        response = run_hook(
+            "claude_code_stop.sh",
+            {
+                "session_id": "claude-compat-smart-trigger-" + uuid.uuid4().hex,
+                "transcript_path": str(transcript),
+                "cwd": tmp,
+            },
+            env={"OVERWATCH_TEST_DISABLE_DISPATCH": "1"},
+        )
+
+    message = str(response.get("systemMessage", ""))
+    test("Claude smart trigger dispatches review request", "Review triggered" in message, message)
+
+
+def test_claude_stop_waits_without_shared_smart_signal() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        transcript = Path(tmp) / "claude-wait.jsonl"
+        transcript.write_text(
+            "\n".join([claude_user_event(f"normal {i}") for i in range(1, 7)]) + "\n",
+            encoding="utf-8",
+        )
+        response = run_hook(
+            "claude_code_stop.sh",
+            {
+                "session_id": "claude-compat-no-smart-signal-" + uuid.uuid4().hex,
+                "transcript_path": str(transcript),
+                "cwd": tmp,
+            },
+            env={"OVERWATCH_TEST_DISABLE_DISPATCH": "1"},
+        )
+
+    message = str(response.get("systemMessage", ""))
+    test("Claude waits without smart signal", "turns until next" in message, message)
+    test("Claude no-signal path does not trigger", "Review triggered" not in message, message)
 
 
 def test_claude_manual_trigger_uses_shared_additional_context_protocol() -> None:
@@ -182,6 +242,8 @@ if __name__ == "__main__":
     test_non_codex_config_defaults_are_claude_api()
     test_claude_stop_still_uses_system_message_status()
     test_claude_stop_does_not_dispatch_when_pending_review_exists()
+    test_claude_stop_uses_shared_smart_trigger_for_review_request()
+    test_claude_stop_waits_without_shared_smart_signal()
     test_claude_manual_trigger_uses_shared_additional_context_protocol()
     test_claude_prompt_delivers_fresh_pending_review()
     print("claude hook compatibility tests passed")
