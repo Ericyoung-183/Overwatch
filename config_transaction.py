@@ -91,6 +91,18 @@ def _write_recovery_bytes(target: Path, content: bytes, mode: int) -> Path:
         raise
 
 
+def _quarantine_path(target: Path) -> Path:
+    descriptor, quarantine_name = tempfile.mkstemp(
+        dir=target.parent,
+        prefix=f".{target.name}.overwatch-rollback.",
+        suffix=".bak",
+    )
+    os.close(descriptor)
+    quarantine = Path(quarantine_name)
+    quarantine.unlink()
+    return quarantine
+
+
 def _atomic_rename(source: Path, destination: Path, *, exchange: bool) -> None:
     libc = ctypes.CDLL(None, use_errno=True)
     system = platform.system()
@@ -195,7 +207,29 @@ def rollback_commit(
     ):
         raise ConfigConflictError(f"external edit preserved during rollback: {target}")
     if displaced is None:
-        target.unlink()
+        quarantine = _quarantine_path(target)
+        try:
+            _atomic_rename(target, quarantine, exchange=False)
+        except BaseException:
+            raise
+        quarantined_matches = (
+            quarantine.read_bytes() == expected_current
+            and (
+                expected_current_mode is None
+                or stat.S_IMODE(quarantine.stat().st_mode) == expected_current_mode
+            )
+        )
+        if not quarantined_matches:
+            try:
+                _atomic_rename(quarantine, target, exchange=False)
+            except OSError as exc:
+                raise ConfigConflictError(
+                    "external edit preserved during rollback at "
+                    f"{quarantine}; another config is active at {target}"
+                ) from exc
+            raise ConfigConflictError(
+                f"external edit preserved during rollback: {target}"
+            )
         fsync_directory(target.parent)
         return
     displaced = reject_symlink(displaced)

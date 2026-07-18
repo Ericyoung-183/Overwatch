@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from anchor_capture import (
+    _assistant_claims_current_item_complete,
     candidate_path,
     dismiss_candidate,
     evaluate_capture_gate,
@@ -50,6 +51,35 @@ def codex_transcript(path: Path, assistant_text: str, session_id: str) -> None:
             ensure_ascii=False,
         )
         + "\n",
+        encoding="utf-8",
+    )
+
+
+def codex_conversation(path: Path, turns: list[tuple[str, str]], session_id: str) -> None:
+    records = [
+        {
+            "type": "session_meta",
+            "payload": {"id": session_id, "cwd": str(path.parent)},
+        }
+    ]
+    records.extend(
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": role,
+                "content": [
+                    {
+                        "type": "output_text" if role == "assistant" else "input_text",
+                        "text": content,
+                    }
+                ],
+            },
+        }
+        for role, content in turns
+    )
+    path.write_text(
+        "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records),
         encoding="utf-8",
     )
 
@@ -189,6 +219,53 @@ def test_explicit_split_turn_intent_captures_an_ordinary_assistant_list_as_child
     test("explicit split-turn intent captures assistant list as child", "push-child" in child, child)
 
 
+def test_split_turn_intent_recovers_a_recent_user_owned_list() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        transcript = root / "session.jsonl"
+        codex_conversation(
+            transcript,
+            [
+                ("user", "我目前有三个问题：\n1. 首次捕获\n2. child capture\n3. 口头完成"),
+                ("assistant", "收到，我先把背景看清楚。"),
+            ],
+            "split-user-list",
+        )
+        gate = evaluate_capture_gate(
+            state_dir=str(root / "state"),
+            session_id="split-user-list",
+            adapter_name="codex",
+            transcript_path=str(transcript),
+            user_prompt="好，我们现在逐一过",
+            cwd=str(root),
+            anchor_active=False,
+        )
+
+    test("split-turn intent recovers the recent user list", "init a root tracker" in gate, gate)
+
+
+def test_generic_continue_recovers_a_declared_child_problem_list() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        transcript = root / "session.jsonl"
+        codex_transcript(
+            transcript,
+            "当前项下面有三个子问题：\n1. 状态恢复\n2. Hook\n3. TODO",
+            "child-problems",
+        )
+        gate = evaluate_capture_gate(
+            state_dir=str(root / "state"),
+            session_id="child-problems",
+            adapter_name="codex",
+            transcript_path=str(transcript),
+            user_prompt="继续吧",
+            cwd=str(root),
+            anchor_active=True,
+        )
+
+    test("generic continue captures an explicit child-problem list", "push-child" in gate, gate)
+
+
 def test_inline_lists_interrupt_vocabulary_and_root_continue_noise() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -236,6 +313,52 @@ def test_inline_lists_interrupt_vocabulary_and_root_continue_noise() -> None:
             anchor_active=False,
         )
         trailing_candidate = show_candidate(str(state), "inline-trailing")
+        chinese_inline = evaluate_capture_gate(
+            state_dir=str(state),
+            session_id="inline-chinese-delimiter",
+            adapter_name="codex",
+            transcript_path="",
+            user_prompt="三个问题：首次捕获、child capture、口头完成。我们逐一过",
+            cwd=str(root),
+            anchor_active=False,
+        )
+        chinese_marker = json.loads(
+            candidate_path(str(state), "inline-chinese-delimiter").read_text(encoding="utf-8")
+        )
+        chinese_tracker = root / "chinese-active.json"
+        chinese_tracker.write_text(
+            json.dumps(
+                {
+                    "agendas": {
+                        "agenda-root": {
+                            "source_excerpt": chinese_marker["source_excerpt"],
+                            "source_ref": chinese_marker["source_ref"],
+                            "items": [
+                                {"text": item} for item in chinese_marker["items"]
+                            ],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        chinese_helper = root / "chinese-anchor.py"
+        chinese_helper.write_text(
+            "import json\nprint(json.dumps({'tracker_path': "
+            + repr(str(chinese_tracker))
+            + "}))\n",
+            encoding="utf-8",
+        )
+        chinese_cleared = evaluate_capture_gate(
+            state_dir=str(state),
+            session_id="inline-chinese-delimiter",
+            adapter_name="codex",
+            transcript_path="",
+            user_prompt="现在处理第一项",
+            cwd=str(root),
+            anchor_active=True,
+            helper_path=str(chinese_helper),
+        )
 
     test("inline numbered lists are captured at runtime", "init a root tracker" in inline, inline)
     test(
@@ -246,6 +369,8 @@ def test_inline_lists_interrupt_vocabulary_and_root_continue_noise() -> None:
     )
     test("common topic-switch wording targets interrupt", "interrupt frame" in interrupt, interrupt)
     test("generic root continue does not capture a status summary", quiet == "", quiet)
+    test("explicit Chinese inline lists are captured", "init a root tracker" in chinese_inline, chinese_inline)
+    test("captured Chinese inline candidates clear against tracker items", chinese_cleared == "", chinese_cleared)
 
 
 def test_transcript_and_persisted_candidate_scope_are_bound() -> None:
@@ -351,11 +476,21 @@ def test_transcript_project_scope_and_explicit_opt_out_fail_closed() -> None:
         opt_out_candidate_exists = candidate_path(
             str(root / "state"), "review-opt-out"
         ).exists()
+        documented_opt_out = evaluate_capture_gate(
+            state_dir=str(root / "state"),
+            session_id="documented-opt-out",
+            adapter_name="codex",
+            transcript_path="",
+            user_prompt="这个清单不用跟踪了",
+            cwd=str(project_b),
+            anchor_active=True,
+        )
 
     test("assistant source cannot cross project roots", "[Anchor Capture Scope Block]" in blocked and "Project A secret" not in blocked, blocked)
     test("explicit no-Anchor instruction wins over list and intent", "[Anchor Capture Opt-Out]" in opt_out, opt_out)
     test("explicit opt-out creates no durable candidate", not opt_out_candidate_exists)
     test("meta description cannot be spliced into a child agenda", meta_only == "", meta_only)
+    test("documented list opt-out wording is honored", "[Anchor Capture Opt-Out]" in documented_opt_out, documented_opt_out)
 
 
 def test_exact_tracker_capture_clears_the_gate() -> None:
@@ -414,6 +549,134 @@ def test_exact_tracker_capture_clears_the_gate() -> None:
         test("an older same-text agenda does not clear a new capture", "[Anchor Capture Required]" in still_pending, still_pending)
         test("exact source capture clears the durable gate", cleared == "", cleared)
         test("captured marker is removed", not candidate_path(str(state), "captured-session").exists())
+
+
+def test_clearing_a_captured_candidate_does_not_drop_a_fresh_child_list() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        state = root / "state"
+        sid = "captured-then-child"
+        first_prompt = "逐一处理：\n1. Alpha\n2. Beta"
+        first = evaluate_capture_gate(
+            state_dir=str(state),
+            session_id=sid,
+            adapter_name="codex",
+            transcript_path="",
+            user_prompt=first_prompt,
+            cwd=str(root),
+            anchor_active=False,
+        )
+        marker_payload = json.loads(candidate_path(str(state), sid).read_text(encoding="utf-8"))
+        tracker = root / "active.json"
+        tracker.write_text(
+            json.dumps(
+                {
+                    "agendas": {
+                        "agenda-root": {
+                            "source_excerpt": marker_payload["source_excerpt"],
+                            "source_ref": marker_payload["source_ref"],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        helper = root / "anchor.py"
+        helper.write_text(
+            "import json\nprint(json.dumps({'tracker_path': " + repr(str(tracker)) + "}))\n",
+            encoding="utf-8",
+        )
+        child = evaluate_capture_gate(
+            state_dir=str(state),
+            session_id=sid,
+            adapter_name="codex",
+            transcript_path="",
+            user_prompt="逐一处理：\n1. Child X\n2. Child Y",
+            cwd=str(root),
+            anchor_active=True,
+            helper_path=str(helper),
+        )
+
+    test("precondition root candidate exists", "init a root tracker" in first, first)
+    test("fresh child survives cleanup of captured root", "push-child" in child, child)
+
+
+def test_common_and_short_label_completion_language_is_detected_conservatively() -> None:
+    positives = [
+        ("A 已经处理完了，我们进入下一项", "A"),
+        ("Hook 没问题了，进入下一项", "Hook"),
+        ("发布结论已确定，下一步做复审", "发布"),
+        ("当前项可以了，继续吧", "任意标题"),
+    ]
+    negatives = [
+        ("A 尚未处理完，我们继续", "A"),
+        ("发布结论还没确定", "发布"),
+        ("代码处理完了，但当前项仍在讨论", "发布"),
+        ("发布还不能说没问题了", "发布"),
+        ("发布没有完全解决", "发布"),
+        ("发布完成了吗？", "发布"),
+        ("当前项可以了吗？", "发布"),
+    ]
+
+    for text, item in positives:
+        test(
+            f"completion wording detected: {text}",
+            _assistant_claims_current_item_complete(text, "item-x", item),
+            text,
+        )
+    for text, item in negatives:
+        test(
+            f"non-completion wording stays quiet: {text}",
+            not _assistant_claims_current_item_complete(text, "item-x", item),
+            text,
+        )
+
+
+def test_transition_scope_failure_is_visible_for_an_active_agenda() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        helper = root / "anchor.py"
+        helper.write_text(
+            "import json\nprint(json.dumps({"
+            "'success': True, 'tracker_id': 'tracker-1', 'cursor_token': 'cursor-1', "
+            "'current_item': {'item_id': 'item-1', 'text': '发布', 'status': 'discussing'}}))\n",
+            encoding="utf-8",
+        )
+        transcript = root / "wrong-session.jsonl"
+        codex_transcript(transcript, "发布已经完成。", "another-session")
+        wrong_scope = evaluate_transition_gate(
+            state_dir=str(root / "state"),
+            session_id="current-session",
+            adapter_name="codex",
+            transcript_path=str(transcript),
+            cwd=str(root),
+            anchor_active=True,
+            helper_path=str(helper),
+        )
+        missing = evaluate_transition_gate(
+            state_dir=str(root / "state"),
+            session_id="current-session",
+            adapter_name="codex",
+            transcript_path="",
+            cwd=str(root),
+            anchor_active=True,
+            helper_path=str(helper),
+        )
+        broken_helper = root / "broken-anchor.py"
+        broken_helper.write_text("raise SystemExit('status unavailable')\n", encoding="utf-8")
+        unreadable_status = evaluate_transition_gate(
+            state_dir=str(root / "state"),
+            session_id="current-session",
+            adapter_name="codex",
+            transcript_path=str(transcript),
+            cwd=str(root),
+            anchor_active=True,
+            helper_path=str(broken_helper),
+        )
+
+    test("wrong-session transition transcript fails visibly", "[Anchor Transition Warning]" in wrong_scope, wrong_scope)
+    test("missing transition transcript fails visibly", "[Anchor Transition Warning]" in missing, missing)
+    test("unreadable Anchor status fails visibly", "[Anchor Transition Warning]" in unreadable_status, unreadable_status)
 
 
 def test_prose_only_completion_creates_an_immediate_durable_recovery_gate() -> None:
@@ -537,7 +800,12 @@ def test_prose_only_completion_creates_an_immediate_durable_recovery_gate() -> N
             text=True,
             check=True,
         )
-        cleared = evaluate_transition_gate(**common)
+        codex_transcript(
+            transcript,
+            "最终复审结论已确定，进入收尾。",
+            sid,
+        )
+        fresh_gate = evaluate_transition_gate(**common)
 
     test("oral completion is blocked on the next prompt", "[Anchor Transition Recovery Required]" in gate, gate)
     test("ordinary implementation completion does not impersonate agenda completion", ordinary_quiet == "", ordinary_quiet)
@@ -545,7 +813,7 @@ def test_prose_only_completion_creates_an_immediate_durable_recovery_gate() -> N
     test("negated completion does not complete the named agenda item", negated_quiet == "", negated_quiet)
     test("oral completion recovery marker is durable", marker_created, str(marker))
     test("oral completion gate persists after transcript loss", "[Anchor Transition Recovery Required]" in persisted, persisted)
-    test("guarded tracker completion clears the recovery gate", cleared == "", cleared)
+    test("a fresh completion claim survives stale-marker cleanup", "[Anchor Transition Recovery Required]" in fresh_gate, fresh_gate)
 
 
 if __name__ == "__main__":
@@ -553,9 +821,14 @@ if __name__ == "__main__":
     test_active_tracker_targets_child_and_explicit_dismissal_is_audited()
     test_active_tracker_does_not_promote_an_ordinary_assistant_summary_to_child()
     test_explicit_split_turn_intent_captures_an_ordinary_assistant_list_as_child()
+    test_split_turn_intent_recovers_a_recent_user_owned_list()
+    test_generic_continue_recovers_a_declared_child_problem_list()
     test_inline_lists_interrupt_vocabulary_and_root_continue_noise()
     test_transcript_and_persisted_candidate_scope_are_bound()
     test_transcript_project_scope_and_explicit_opt_out_fail_closed()
     test_exact_tracker_capture_clears_the_gate()
+    test_clearing_a_captured_candidate_does_not_drop_a_fresh_child_list()
+    test_common_and_short_label_completion_language_is_detected_conservatively()
+    test_transition_scope_failure_is_visible_for_an_active_agenda()
     test_prose_only_completion_creates_an_immediate_durable_recovery_gate()
     print("Anchor capture gate tests passed")

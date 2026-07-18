@@ -158,8 +158,8 @@ try:
             expected_original=original,
             expected_mode=mode,
         )
-        committed.append((path, updated, displaced))
-    for path, _, displaced in committed:
+        committed.append((path, updated, mode, displaced))
+    for path, _, _, displaced in committed:
         backup = Path(str(path) + ".backup")
         reject_symlink(backup)
         if displaced is None:
@@ -167,13 +167,13 @@ try:
         shutil.copy2(displaced, backup)
 except BaseException:
     rollback_errors = []
-    for path, updated, displaced in reversed(committed):
+    for path, updated, committed_mode, displaced in reversed(committed):
         try:
             rollback_commit(
                 path,
                 displaced,
                 expected_current=updated,
-                expected_current_mode=mode,
+                expected_current_mode=committed_mode,
             )
         except ConfigConflictError as exc:
             rollback_errors.append(f"{path}: {exc}")
@@ -183,7 +183,7 @@ except BaseException:
         raise RuntimeError("uninstall failed and rollback was incomplete: " + "; ".join(rollback_errors))
     raise
 finally:
-    for _, _, displaced in committed:
+    for _, _, _, displaced in committed:
         if displaced is not None and displaced not in preserve_displaced:
             displaced.unlink(missing_ok=True)
     for temporary in staged.values():

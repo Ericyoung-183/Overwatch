@@ -211,6 +211,39 @@ def test_config_rollback_preserves_external_edit_and_original() -> None:
     test("post-rollback managed bytes are not discarded", displaced_bytes == b"managed\n", repr(displaced_bytes))
 
 
+def test_new_config_rollback_quarantines_before_validation() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "new-hooks.json"
+        target.write_bytes(b"managed\n")
+        os.chmod(target, 0o600)
+        real_rename = config_transaction._atomic_rename
+        injected = False
+
+        def raced_rename(source: Path, destination: Path, *, exchange: bool) -> None:
+            nonlocal injected
+            if source == target and not exchange and not injected:
+                injected = True
+                target.write_bytes(b"external\n")
+            real_rename(source, destination, exchange=exchange)
+
+        with mock.patch.object(config_transaction, "_atomic_rename", side_effect=raced_rename):
+            try:
+                config_transaction.rollback_commit(
+                    target,
+                    None,
+                    expected_current=b"managed\n",
+                    expected_current_mode=0o600,
+                )
+            except config_transaction.ConfigConflictError as exc:
+                error = str(exc)
+            else:
+                error = ""
+        current = target.read_bytes() if target.is_file() else b""
+
+    test("new-config rollback detects an atomic replacement race", "external edit preserved" in error, error)
+    test("new-config rollback restores the external writer", current == b"external\n", repr(current))
+
+
 def test_session_triggers_are_isolated() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         first = write_trigger(tmp, "session-a", {"type": "manual_trigger", "cwd": "/a"})
@@ -741,6 +774,7 @@ if __name__ == "__main__":
     test_engine_rejects_transcript_from_another_project_before_lock()
     test_config_exchange_preserves_original_after_post_commit_race()
     test_config_rollback_preserves_external_edit_and_original()
+    test_new_config_rollback_quarantines_before_validation()
     test_session_triggers_are_isolated()
     test_auto_review_trigger_streams_only_hash_verified_bytes()
     test_find_review_refuses_ambiguous_project_session()

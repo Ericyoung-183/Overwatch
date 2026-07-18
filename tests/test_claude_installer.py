@@ -596,6 +596,56 @@ def test_uninstaller_preserves_concurrent_config_edit() -> None:
     test("uninstaller preserves concurrent config edit", "External" in current.get("hooks", {}), str(current))
 
 
+def test_uninstaller_rolls_back_mixed_modes_after_late_failure() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        home = base / "home"
+        claude_dir = home / ".claude"
+        claude_dir.mkdir(parents=True)
+        claude_settings = claude_dir / "settings.json"
+        claude_command = "bash " + shlex.quote(str(ROOT / "hooks" / "claude_code_stop.sh"))
+        claude_settings.write_text(
+            json.dumps({"hooks": {"Stop": [{"matcher": "", "hooks": [{"command": claude_command}]}]}}),
+            encoding="utf-8",
+        )
+        claude_settings.chmod(0o600)
+        codex_config = base / "hooks.json"
+        codex_command = "bash " + shlex.quote(str(ROOT / "hooks" / "codex_stop.sh"))
+        codex_config.write_text(
+            json.dumps({"hooks": {"Stop": [{"command": codex_command}]}}),
+            encoding="utf-8",
+        )
+        codex_config.chmod(0o644)
+        claude_before = claude_settings.read_bytes()
+        codex_before = codex_config.read_bytes()
+        codex_backup_target = base / "do-not-touch"
+        codex_backup_target.write_text("external\n", encoding="utf-8")
+        Path(str(codex_config) + ".backup").symlink_to(codex_backup_target)
+
+        result = subprocess.run(
+            ["bash", str(ROOT / "uninstall.sh")],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={
+                **os.environ,
+                "HOME": str(home),
+                "CC_SETTINGS_PATH": str(claude_settings),
+                "CODEX_HOOKS_PATH": str(codex_config),
+            },
+        )
+
+        claude_restored = claude_settings.read_bytes() == claude_before
+        codex_restored = codex_config.read_bytes() == codex_before
+        claude_mode = claude_settings.stat().st_mode & 0o777
+        codex_mode = codex_config.stat().st_mode & 0o777
+
+    test("late backup failure aborts uninstall", result.returncode != 0, result.stdout + result.stderr)
+    test("mixed-mode rollback restores Claude bytes", claude_restored, result.stdout + result.stderr)
+    test("mixed-mode rollback restores Codex bytes", codex_restored, result.stdout + result.stderr)
+    test("mixed-mode rollback restores each original mode", claude_mode == 0o600 and codex_mode == 0o644, f"{oct(claude_mode)} {oct(codex_mode)}")
+
+
 def test_uninstaller_rejects_symlink_config() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -657,6 +707,7 @@ if __name__ == "__main__":
     test_uninstaller_refuses_incomplete_markers_without_changing_claude_md()
     test_uninstaller_preflights_all_runtime_configs_before_any_write()
     test_uninstaller_preserves_concurrent_config_edit()
+    test_uninstaller_rolls_back_mixed_modes_after_late_failure()
     test_uninstaller_rejects_symlink_config()
     test_installer_preserves_unmarked_overwatch_like_user_section()
     print("claude installer tests passed")

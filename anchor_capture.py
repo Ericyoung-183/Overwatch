@@ -42,7 +42,8 @@ _SEQUENTIAL_PATTERNS = [
 ]
 _GENERIC_CONTINUE_RE = re.compile(r"(?:请继续|继续吧|继续)$", re.IGNORECASE)
 _CHILD_DECLARATION_RE = re.compile(
-    r"(?:子清单|子议程|child agenda|拆成以下|分成以下|下面(?:这)?(?:几|[0-9]+)项(?:需要)?逐(?:一|条))",
+    r"(?:子清单|子议程|子问题|child agenda|拆成以下|分成以下|"
+    r"下面(?:有|这)?(?:几|[0-9一二三四五六七八九十]+)(?:个)?(?:子问题|问题|项)(?:需要)?逐(?:一|条)?)",
     re.IGNORECASE,
 )
 _INTERRUPT_RE = re.compile(
@@ -54,6 +55,7 @@ _OPT_OUT_RE = re.compile(
     r"(?:不要|不准|无需|不用|请勿).{0,24}(?:运行|使用|启动|触发|写入|调用|执行|跟踪).{0,12}Anchor|"
     r"(?:不要|请勿|不需要|无需).{0,12}(?:跟踪|建(?:立)?议程|建(?:立)?清单|创建 tracker)|"
     r"\b(?:do not|don't|dont|no need to)\s+(?:run|use|invoke|start|track with)\s+anchor\b|"
+    r"(?:这个|这份|上述|上面)?清单.{0,8}(?:不用|无需|不需要|别)(?:再)?跟踪|"
     r"\b(?:do not|don't|dont)\s+track\b",
     re.IGNORECASE,
 )
@@ -76,11 +78,13 @@ _INLINE_TRAILING_INTENT_RE = re.compile(
 )
 _ORAL_COMPLETION_RE = re.compile(
     r"(?:(?:完成|处理完|解决|关闭)(?:了|完毕)?|"
-    r"(?:已经|已|彻底|基本)收尾(?:了|完毕)?|收尾(?:完成|完毕|了))",
+    r"(?:已经|已|彻底|基本)收尾(?:了|完毕)?|收尾(?:完成|完毕|了)|"
+    r"结论(?:已经|已)?(?:确定|确认|定了)|没问题了?|可以了|搞定(?:了)?)",
     re.IGNORECASE,
 )
 _NEGATIVE_COMPLETION_BEFORE_RE = re.compile(
-    r"(?:未|没|没有|尚未|还未|还没|并未|并非|不是|不算|无法|不能)\s*$",
+    r"(?:未|没|没有|尚未|还未|还没|并未|并非|不是|不算|无法|不能)"
+    r"(?:完全|彻底|真正|全部|说|算|认为|视为)?\s*$",
     re.IGNORECASE,
 )
 _NEGATIVE_COMPLETION_AFTER_RE = re.compile(r"^\s*(?:不了|失败)", re.IGNORECASE)
@@ -179,7 +183,11 @@ def _assistant_claims_current_item_complete(
         if numeric_id
         else None
     )
-    for clause in re.split(r"[\n。！？!?；;]+", assistant_text):
+    clauses = re.finditer(r"([^\n。！？!?；;,，]+)([。！？!?；;,，]?)", assistant_text)
+    for clause_match in clauses:
+        clause = clause_match.group(1)
+        if clause_match.group(2) in {"?", "？"}:
+            continue
         positive_completion = any(
             not _NEGATIVE_COMPLETION_BEFORE_RE.search(clause[: match.start()])
             and not _NEGATIVE_COMPLETION_AFTER_RE.search(clause[match.end() :])
@@ -189,7 +197,12 @@ def _assistant_claims_current_item_complete(
             continue
         if _CURRENT_ITEM_RE.search(clause):
             return True
-        if len(normalized_item) >= 4 and normalized_item in _normalized_text(clause):
+        if len(normalized_item) >= 2 and normalized_item in _normalized_text(clause):
+            return True
+        raw_item = str(item_text or "").strip()
+        if len(normalized_item) == 1 and raw_item and re.search(
+            rf"^\s*{re.escape(raw_item)}(?:\s|[：:,，])", clause, re.IGNORECASE
+        ):
             return True
         if numeric_pattern and numeric_pattern.search(clause):
             return True
@@ -205,6 +218,17 @@ def _render_transition_gate(marker: dict) -> str:
             f"Current item ID: {marker.get('current_item_id', '')}",
             f"Cursor token at detection: {marker.get('cursor_token', '')}",
             "Before substantive work, read current Anchor status, satisfy any pending Whole Picture acknowledgement, then persist the real conclusion with guarded finish/next. Do not infer completion from prose.",
+        ]
+    )
+
+
+def _render_transition_warning(reason: str) -> str:
+    return "\n".join(
+        [
+            "[Anchor Transition Warning]",
+            "The active agenda's prose-completion transition could not be verified from the native transcript.",
+            f"Reason: {reason}",
+            "Do not treat prose-only completion enforcement as successful until transcript session and project identity are restored.",
         ]
     )
 
@@ -239,7 +263,7 @@ def evaluate_transition_gate(
                 "current_item_id": "unknown",
                 "cursor_token": "unknown",
             }
-        ) if path.is_file() else ""
+        ) if path.is_file() else _render_transition_warning("Anchor status is unreadable")
 
     tracker_id = str(status.get("tracker_id") or "")
     cursor_token = str(status.get("cursor_token") or "")
@@ -269,15 +293,14 @@ def evaluate_transition_gate(
             return _render_transition_gate(marker)
         path.unlink(missing_ok=True)
         fsync_directory(path.parent)
-        return ""
 
     if not transcript_path or not Path(transcript_path).is_file():
-        return ""
+        return _render_transition_warning("native transcript is unavailable")
     try:
         _transcript_scope(adapter_name, transcript_path, session_id, project_root)
         turns = get_adapter(adapter_name)(transcript_path, offset=0)
-    except (CaptureScopeError, OSError, UnicodeDecodeError, ValueError):
-        return ""
+    except (CaptureScopeError, OSError, UnicodeDecodeError, ValueError) as exc:
+        return _render_transition_warning(str(exc))
     assistant_turn = next((turn for turn in reversed(turns) if turn.role == "assistant"), None)
     if not assistant_turn or not _assistant_claims_current_item_complete(
         assistant_turn.content, current_item_id, current_item_text
@@ -334,6 +357,19 @@ def extract_list(text: str) -> tuple[list[str], str]:
         if not in_fence:
             visible_lines.append(raw_line)
     visible = "\n".join(visible_lines)
+    if any(pattern.search(visible) for pattern in _SEQUENTIAL_PATTERNS):
+        chinese_inline = re.search(
+            r"(?:问题|事项|议题|清单)[^：:\n]{0,12}[：:]\s*([^\n]+)", visible,
+            re.IGNORECASE,
+        )
+        if chinese_inline:
+            body = chinese_inline.group(1).strip()
+            trailing = _INLINE_TRAILING_INTENT_RE.match(body)
+            if trailing and trailing.group(1).strip():
+                body = trailing.group(1).strip()
+            parts = [part.strip(" \t。.!！?？,，；;") for part in body.split("、")]
+            if 2 <= len(parts) <= 50 and all(part and len(part) <= 500 for part in parts):
+                return parts, body
     matches = list(_INLINE_NUMBER_RE.finditer(visible))
     if not (2 <= len(matches) <= 50):
         return [], ""
@@ -387,7 +423,7 @@ def _transcript_scope(
         raise CaptureScopeError("transcript project does not match the current project")
 
 
-def _latest_assistant_source(
+def _latest_transcript_source(
     adapter_name: str,
     transcript_path: str,
     expected_session_id: str,
@@ -402,15 +438,27 @@ def _latest_assistant_source(
         expected_project_root,
     )
     turns = get_adapter(adapter_name)(transcript_path, offset=0)
+    inspected = 0
     for turn in reversed(turns):
-        if turn.role != "assistant":
+        if turn.role not in {"assistant", "user"}:
             continue
-        if "Whole Picture:" in turn.content or "[Anchor Capture Required]" in turn.content:
+        if not str(turn.content or "").strip():
             continue
+        if turn.role == "assistant" and (
+            "Whole Picture:" in turn.content or "[Anchor Capture Required]" in turn.content
+        ):
+            continue
+        inspected += 1
         items, excerpt = extract_list(turn.content)
         if items:
-            return items, excerpt, f"assistant transcript line {turn.line_number + 1}", turn.content
-        return [], "", "", ""
+            return (
+                items,
+                excerpt,
+                f"{turn.role} transcript line {turn.line_number + 1}",
+                turn.content,
+            )
+        if inspected >= 3:
+            break
     return [], "", "", ""
 
 
@@ -438,7 +486,7 @@ def detect_candidate(
         ):
             return None
     else:
-        items, excerpt, source_ref, assistant_text = _latest_assistant_source(
+        items, excerpt, source_ref, assistant_text = _latest_transcript_source(
             adapter_name,
             transcript_path,
             session_id,
@@ -509,6 +557,12 @@ def _candidate_already_captured(
         if not isinstance(agenda, dict):
             continue
         items, _ = extract_list(str(agenda.get("source_excerpt") or ""))
+        if not items:
+            items = [
+                str(item.get("text") or "")
+                for item in (agenda.get("items") or [])
+                if isinstance(item, dict) and str(item.get("text") or "")
+            ]
         target_matches = (
             (target == "root" and not agenda.get("parent_agenda_id") and not agenda.get("interrupts_stack"))
             or (target == "child" and bool(agenda.get("parent_agenda_id")) and not agenda.get("interrupts_stack"))
@@ -647,6 +701,7 @@ def evaluate_capture_gate(
                 "The current user prompt explicitly declines Anchor tracking. Do not create or mutate an Anchor tracker for this request.",
             ]
         )
+    captured_candidate = None
     if candidate and _candidate_already_captured(
         candidate,
         helper_path=helper_path,
@@ -656,7 +711,8 @@ def evaluate_capture_gate(
     ):
         path.unlink(missing_ok=True)
         fsync_directory(path.parent)
-        return ""
+        captured_candidate = candidate
+        candidate = None
     if candidate is None:
         try:
             candidate = detect_candidate(
@@ -670,6 +726,12 @@ def evaluate_capture_gate(
         except CaptureScopeError as exc:
             return _render_scope_block(None, module_path, str(exc))
         if candidate is None:
+            return ""
+        if (
+            captured_candidate
+            and candidate.get("source_sha256") == captured_candidate.get("source_sha256")
+            and candidate.get("target") == captured_candidate.get("target")
+        ):
             return ""
         candidate.update(
             {
