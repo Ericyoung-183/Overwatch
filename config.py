@@ -5,6 +5,7 @@ import re
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 _ALLOWED_INLINE_WHITESPACE = {"\t", "\n", "\r"}
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 
 def _clean_env(value: str, default: str = "") -> str:
@@ -25,10 +26,25 @@ def _clean_model_id(model_id: str) -> str:
     return re.sub(r"\[.*?\]$", "", model_id)
 
 
+def valid_session_id(session_id: str) -> bool:
+    return bool(_SESSION_ID_RE.fullmatch(str(session_id or "")))
+
+
+def require_valid_session_id(session_id: str) -> str:
+    value = str(session_id or "")
+    if not valid_session_id(value):
+        raise ValueError("invalid Overwatch session ID")
+    return value
+
+
 # --- Paths (auto-detected, no manual editing needed) ---
 OVERWATCH_DIR = os.path.dirname(os.path.abspath(__file__))
-REVIEWS_DIR = os.path.join(OVERWATCH_DIR, "reviews")
-STATE_DIR = os.path.join(OVERWATCH_DIR, "state")
+REVIEWS_DIR = os.path.abspath(os.path.expanduser(
+    os.environ.get("OVERWATCH_REVIEWS_DIR", os.path.join(OVERWATCH_DIR, "reviews"))
+))
+STATE_DIR = os.path.abspath(os.path.expanduser(
+    os.environ.get("OVERWATCH_STATE_DIR", os.path.join(OVERWATCH_DIR, "state"))
+))
 CURRENT_REVIEW_LINK = os.path.join(REVIEWS_DIR, "_current.md")
 
 # --- Throttle ---
@@ -38,9 +54,9 @@ TURN_THRESHOLD_MIN = 5   # Minimum turns between reviews (floor, even with smart
 TURN_THRESHOLD_MAX = 15  # Maximum turns without review (hard ceiling)
 
 # --- Context Window ---
-RECENT_WINDOW_SIZE = 20  # Keep last N user-assistant exchanges verbatim
+RECENT_WINDOW_SIZE = 20  # Keep last N exact user/assistant exchanges plus bounded tool evidence
 MAX_SUMMARY_CHARS = 5000  # Rolling summary max characters
-MAX_TURN_CONTENT_CHARS = 4000  # Per-turn content truncation limit
+MAX_TURN_CONTENT_CHARS = 4000  # Default bound for tool/developer evidence, not user/assistant messages
 MAX_GIT_DIFF_CHARS = 8000  # Git diff truncation limit for review context
 MAX_USER_CONTEXT_CHARS = 8000  # Total user memory context limit (L2+L3+L4)
 
@@ -135,6 +151,20 @@ ALLOWED_PROJECTS = [
     p for p in os.environ.get("OVERWATCH_ALLOWED_PROJECTS", "").split(":")
     if p
 ]
+
+
+def project_is_allowed(cwd: str) -> bool:
+    if not ALLOWED_PROJECTS:
+        return True
+    candidate = os.path.normcase(os.path.realpath(os.path.expanduser(cwd or os.getcwd())))
+    for configured in ALLOWED_PROJECTS:
+        root = os.path.normcase(os.path.realpath(os.path.expanduser(configured)))
+        try:
+            if os.path.commonpath([candidate, root]) == root:
+                return True
+        except ValueError:
+            continue
+    return False
 
 # --- Skip Patterns ---
 SKIP_TYPES = {"system", "attachment", "file-history-snapshot", "permission-mode"}

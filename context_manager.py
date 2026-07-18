@@ -2,6 +2,7 @@
 import json
 import os
 import sys
+import tempfile
 
 from config import (
     RECENT_WINDOW_SIZE,
@@ -10,12 +11,15 @@ from config import (
     MAX_SUMMARY_INPUT_CHARS,
     SUMMARY_MODEL,
     STATE_DIR,
+    require_valid_session_id,
 )
 from adapters import Turn, format_turn
+from runtime_fs import ensure_private_directory, fsync_directory
 
 
 def load_state(session_id: str) -> dict:
     """Load or initialize session state."""
+    session_id = require_valid_session_id(session_id)
     path = os.path.join(STATE_DIR, f"{session_id}.json")
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
@@ -33,14 +37,26 @@ def load_state(session_id: str) -> dict:
 
 def save_state(session_id: str, state: dict):
     """Persist session state to disk."""
-    os.makedirs(STATE_DIR, exist_ok=True)
+    session_id = require_valid_session_id(session_id)
+    ensure_private_directory(STATE_DIR)
     path = os.path.join(STATE_DIR, f"{session_id}.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+    fd, tmp = tempfile.mkstemp(dir=STATE_DIR, suffix=".tmp")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        fsync_directory(STATE_DIR)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 
 def split_context_window(turns: list[Turn]) -> tuple[list[Turn], list[Turn]]:
-    """Split turns into old (to be summarized) and recent (kept verbatim).
+    """Split turns into old (to be summarized) and recent (kept in adapter form).
 
     Recent = last RECENT_WINDOW_SIZE user messages and all subsequent assistant/tool turns.
     Old = everything before that.
@@ -89,8 +105,14 @@ def _call_summary_model(existing_summary: str, new_text: str) -> str:
     if budget < 1000:
         return _truncate_summary(existing_summary, new_text)
     if len(new_text) > budget:
-        print(f"[Overwatch] new_text too large ({len(new_text)} chars), pre-truncating to {budget}", file=sys.stderr)
-        new_text = new_text[:budget]
+        print(f"[Overwatch] new_text too large ({len(new_text)} chars), retaining newest {budget}", file=sys.stderr)
+        marker = "... [earlier summary input dropped before model call] ...\n\n"
+        tail_budget = budget - len(marker)
+        new_text = (
+            new_text[-budget:]
+            if tail_budget <= 0
+            else marker + new_text[-tail_budget:]
+        )
 
     if existing_summary:
         user_message = (
@@ -116,21 +138,16 @@ def _call_summary_model(existing_summary: str, new_text: str) -> str:
 
 def _truncate_summary(existing_summary: str, new_text: str) -> str:
     """Fallback truncation when summary model call fails."""
-    if not existing_summary:
-        if len(new_text) > MAX_SUMMARY_CHARS:
-            return new_text[:MAX_SUMMARY_CHARS - 30] + "\n\n... [truncated] ..."
-        return new_text
-
     separator = "\n\n---\n\n"
-    remaining = MAX_SUMMARY_CHARS - len(existing_summary) - len(separator)
+    combined = f"{existing_summary}{separator}{new_text}" if existing_summary else new_text
+    if len(combined) <= MAX_SUMMARY_CHARS:
+        return combined
 
-    if remaining <= 100:
-        return existing_summary
-
-    if len(new_text) > remaining:
-        new_text = new_text[:remaining - 30] + "\n\n... [new content truncated] ..."
-
-    return f"{existing_summary}{separator}{new_text}"
+    marker = "... [earlier deterministic context dropped] ...\n\n"
+    tail_budget = MAX_SUMMARY_CHARS - len(marker)
+    if tail_budget <= 0:
+        return combined[-MAX_SUMMARY_CHARS:]
+    return marker + combined[-tail_budget:]
 
 
 def summarize_turns(turns: list[Turn], existing_summary: str = "") -> str:
@@ -192,7 +209,10 @@ def build_review_context(
     if git_context:
         sections.append(git_context)
 
-    sections.append(f"## Recent Conversation (verbatim)\n{recent_text}")
+    sections.append(
+        "## Recent Conversation (exact user/assistant messages; bounded tool evidence)\n"
+        + recent_text
+    )
 
     context_text = "\n\n---\n\n".join(sections)
 

@@ -9,8 +9,8 @@ set -euo pipefail
 
 OVERWATCH_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OVERWATCH_PY="${OVERWATCH_DIR}/overwatch.py"
-STATE_DIR="${OVERWATCH_DIR}/state"
-LOG_FILE="${OVERWATCH_DIR}/overwatch.log"
+STATE_DIR="${OVERWATCH_STATE_DIR:-${OVERWATCH_DIR}/state}"
+LOG_FILE="${OVERWATCH_LOG_FILE:-${OVERWATCH_DIR}/overwatch.log}"
 
 # Default output
 OUTPUT='{"continue": true}'
@@ -24,6 +24,14 @@ INPUT=$(cat)
 
 # Parse key fields
 SESSION_ID=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('session_id',''))" 2>/dev/null || echo "")
+SESSION_VALID=$(OW_DIR="$OVERWATCH_DIR" OW_SID="$SESSION_ID" python3 -c "
+import os, sys; sys.path.insert(0, os.environ['OW_DIR'])
+from config import valid_session_id
+print('true' if valid_session_id(os.environ.get('OW_SID', '')) else 'false')
+" 2>/dev/null || echo "false")
+if [ "$SESSION_VALID" != "true" ]; then
+    SESSION_ID=""
+fi
 TRANSCRIPT_PATH=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('transcript_path',''))" 2>/dev/null || echo "")
 
 if [ -z "$SESSION_ID" ] || [ -z "$TRANSCRIPT_PATH" ]; then
@@ -33,16 +41,11 @@ fi
 CWD=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cwd',''))" 2>/dev/null || echo "")
 
 # Project whitelist check (empty = all projects allowed)
-ALLOWED=$(OW_CWD="$CWD" python3 -c "
-import os, sys; sys.path.insert(0, '$OVERWATCH_DIR')
-from config import ALLOWED_PROJECTS
+ALLOWED=$(OW_DIR="$OVERWATCH_DIR" OW_CWD="$CWD" python3 -c "
+import os, sys; sys.path.insert(0, os.environ['OW_DIR'])
+from config import project_is_allowed
 cwd = os.environ.get('OW_CWD', '')
-if not ALLOWED_PROJECTS:
-    print('yes')
-elif any(cwd.startswith(p) for p in ALLOWED_PROJECTS):
-    print('yes')
-else:
-    print('no')
+print('yes' if project_is_allowed(cwd) else 'no')
 " 2>/dev/null || echo "yes")
 
 if [ "$ALLOWED" = "no" ]; then
@@ -50,52 +53,62 @@ if [ "$ALLOWED" = "no" ]; then
 fi
 
 # Write session mapping (cwd -> session_id) for find_review.sh
+[ ! -L "$STATE_DIR" ] || exit 0
 mkdir -p "$STATE_DIR"
-OW_STATE_DIR="$STATE_DIR" OW_CWD="$CWD" OW_SID="$SESSION_ID" python3 -c "
-import json, os, tempfile
-state_dir = os.environ['OW_STATE_DIR']
-map_file = os.path.join(state_dir, 'session_map.json')
-m = {}
-if os.path.exists(map_file):
-    with open(map_file) as f:
-        m = json.load(f)
-m[os.environ['OW_CWD']] = os.environ['OW_SID']
-fd, tmp = tempfile.mkstemp(dir=state_dir, suffix='.tmp')
-with os.fdopen(fd, 'w') as f:
-    json.dump(m, f, ensure_ascii=False, indent=2)
-os.replace(tmp, map_file)
+chmod 700 "$STATE_DIR"
+OW_DIR="$OVERWATCH_DIR" OW_STATE_DIR="$STATE_DIR" OW_CWD="$CWD" OW_SID="$SESSION_ID" python3 -c "
+import os, sys
+sys.path.insert(0, os.environ['OW_DIR'])
+from session_registry import record_session
+record_session(os.environ['OW_STATE_DIR'], os.environ['OW_CWD'], os.environ['OW_SID'])
 " 2>/dev/null
 
 # Check for pending auto-review (signal only — delivery handled by UserPromptSubmit hook)
 PENDING_FILE="${STATE_DIR}/auto_review_pending_${SESSION_ID}.json"
 LOCK_FILE="${STATE_DIR}/${SESSION_ID}.lock"
 if [ -f "$PENDING_FILE" ]; then
-    PENDING_ACTION=$(OW_DIR="$OVERWATCH_DIR" OW_PENDING="$PENDING_FILE" python3 - <<'PY' 2>/dev/null || echo "deliver"
+    PENDING_ACTION=$(OW_DIR="$OVERWATCH_DIR" OW_PENDING="$PENDING_FILE" OW_SID="$SESSION_ID" python3 - <<'PY' 2>/dev/null || echo "invalid_marker"
 import os
 import sys
 
 sys.path.insert(0, os.environ["OW_DIR"])
 from pending_review import cleanup_expired_pending
 
-status = cleanup_expired_pending(os.environ["OW_PENDING"])
-print("deliver" if status.get("deliverable") else "expired")
+status = cleanup_expired_pending(
+    os.environ["OW_PENDING"],
+    expected_session_id=os.environ["OW_SID"],
+)
+print("deliver" if status.get("deliverable") else (status.get("reason") or "invalid_marker"))
 PY
 )
     if [ "$PENDING_ACTION" = "deliver" ]; then
         OUTPUT='{"continue": true, "systemMessage": "⏱ '"$(date +%H:%M:%S)"' | [Overwatch] Auto-review ready."}'
         exit 0
     fi
-    echo "[Overwatch Hook $(date +%H:%M:%S)] Expired auto-review pending discarded (session=$SESSION_ID)" >> "$LOG_FILE" 2>&1
+    if [ "$PENDING_ACTION" = "expired" ]; then
+        echo "[Overwatch Hook $(date +%H:%M:%S)] Expired auto-review pending discarded (session=$SESSION_ID)" >> "$LOG_FILE" 2>&1
+    elif [ "$PENDING_ACTION" = "missing_review" ]; then
+        OUTPUT='{"continue": true, "systemMessage": "[Overwatch] Review file missing; pending marker preserved for retry."}'
+        exit 0
+    else
+        OUTPUT='{"continue": true, "systemMessage": "[Overwatch] Auto-review marker unreadable; pending evidence preserved."}'
+        exit 0
+    fi
 fi
-if [ -f "$LOCK_FILE" ]; then
+if OW_DIR="$OVERWATCH_DIR" OW_STATE_DIR="$STATE_DIR" OW_SID="$SESSION_ID" python3 -c "
+import os, sys
+sys.path.insert(0, os.environ['OW_DIR'])
+from session_registry import session_lock_active
+raise SystemExit(0 if session_lock_active(os.environ['OW_STATE_DIR'], os.environ['OW_SID']) else 1)
+" 2>/dev/null; then
     OUTPUT='{"continue": true, "systemMessage": "⏱ '"$(date +%H:%M:%S)"' | [Overwatch] Review in progress..."}'
     exit 0
 fi
 
 # Skip if last user message was a manual trigger (already handled by UserPromptSubmit hook)
-LAST_USER_MSG=$(tail -20 "$TRANSCRIPT_PATH" 2>/dev/null | python3 -c "
-import sys, json
-sys.path.insert(0, '$OVERWATCH_DIR')
+LAST_USER_MSG=$(tail -20 "$TRANSCRIPT_PATH" 2>/dev/null | OW_DIR="$OVERWATCH_DIR" python3 -c "
+import os, sys, json
+sys.path.insert(0, os.environ['OW_DIR'])
 from config import TRIGGER_KEYWORDS
 last_user = ''
 for line in sys.stdin:

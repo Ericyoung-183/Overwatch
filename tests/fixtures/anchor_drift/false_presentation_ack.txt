@@ -1,0 +1,5 @@
+[Anchor]
+Current: A
+Pending Whole Picture [presentation-1]
+Tool: anchor.py ack-presented --presentation-id presentation-1
+Assistant: 已确认，开始处理 A。

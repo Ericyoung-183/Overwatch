@@ -1,0 +1,4 @@
+[Anchor]
+Current: C > 2
+User: 打断一下，先处理另一个三个问题，我们逐一过。
+Assistant: 好，先看新问题 1。

@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import os
+import json
+import subprocess
 import sys
 import tempfile
 import importlib.util
@@ -20,12 +22,15 @@ from response_protocol import (  # noqa: E402
     build_manual_trigger_context,
 )
 from prompts import OVERWATCH_SYSTEM_PROMPT, build_review_prompt  # noqa: E402
+from overwatch import write_manual_result  # noqa: E402
 
 
 REQUIRED_PROTOCOL_PHRASES = [
     "Present the full review text verbatim",
     "no rewriting, omitting, or merging",
     "separator line",
+    "Honor an explicit read-only",
+    "this exception overrides the fix-now and persistence defaults",
     "For each Issue and Recommendation",
     "Fix now is the default",
     "Only use TODO/backlog when",
@@ -157,11 +162,17 @@ def test_anchor_drift_auto_requires_anchor_signal() -> None:
             helper.parent.mkdir(parents=True)
             helper.write_text("# helper marker\n", encoding="utf-8")
             system_with_helper, _ = build_review_prompt("RECENT CONTEXT", review_number=1, include_tools=False)
+            system_with_capture, _ = build_review_prompt(
+                "[Anchor Capture Required]\nTarget: init root agenda",
+                review_number=1,
+                include_tools=False,
+            )
 
     test("auto prompt omits Anchor rule without helper or context", "Anchor agenda drift" not in system_without_anchor)
     test("auto prompt includes Anchor rule when context has Anchor", "Anchor agenda drift" in system_with_context)
     test("auto prompt includes rubric when context has Anchor", "missed-root-capture" in system_with_context)
-    test("auto prompt includes Anchor rule when helper exists", "Anchor agenda drift" in system_with_helper)
+    test("installed helper alone does not enable Anchor review noise", "Anchor agenda drift" not in system_with_helper)
+    test("capture gate enables Anchor review", "Anchor agenda drift" in system_with_capture)
 
 
 def test_anchor_drift_prompt_can_be_forced_on() -> None:
@@ -175,12 +186,12 @@ def test_anchor_drift_prompt_can_be_forced_on() -> None:
 def test_auto_context_embeds_protocol_and_review_text() -> None:
     context = build_auto_review_context(
         "REVIEW BODY",
-        cleanup_command="rm -f state/latest_trigger.json",
+        cleanup_command="rm -f state/triggers/session-a.json",
     )
 
     test("auto context has auto-review marker", "[Overwatch Auto-Review]" in context)
     test("auto context includes review body", "REVIEW BODY" in context)
-    test("auto context includes cleanup command", "rm -f state/latest_trigger.json" in context)
+    test("auto context includes cleanup command", "rm -f state/triggers/session-a.json" in context)
     assert_protocol_present("auto context includes full protocol", context)
 
 
@@ -188,13 +199,13 @@ def test_manual_context_embeds_protocol_and_commands() -> None:
     context = build_manual_trigger_context(
         review_command="python3 overwatch.py --force",
         find_review_command="bash hooks/find_review.sh",
-        cleanup_command="rm -f state/latest_trigger.json",
+        cleanup_command="rm -f state/triggers/session-a.json",
     )
 
     test("manual context has manual trigger marker", "[Overwatch Manual Trigger]" in context)
     test("manual context includes review command", "python3 overwatch.py --force" in context)
     test("manual context includes find-review command", "bash hooks/find_review.sh" in context)
-    test("manual context includes cleanup command", "rm -f state/latest_trigger.json" in context)
+    test("manual context includes cleanup command", "rm -f state/triggers/session-a.json" in context)
     assert_protocol_present("manual context includes full protocol", context)
 
 
@@ -209,9 +220,112 @@ def test_hooks_use_shared_protocol_builders() -> None:
         test(f"{hook.name} avoids weak manual instruction", "Present the full review verbatim, then respond point by point" not in text)
 
 
+def test_manual_result_lookup_rejects_stale_or_wrong_session_review() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        review = root / "review.md"
+        result_file = root / "result.json"
+        session_id = "session-current"
+        review_text = (
+            f"<!-- Overwatch Review #1 | 2026-07-18 10:00:00 | session: {session_id} | project: /tmp/p -->\n"
+            "<!-- META_END -->\n\nreview body\n"
+        )
+        review.write_text(review_text, encoding="utf-8")
+        write_manual_result(str(result_file), session_id, str(review))
+        success = subprocess.run(
+            [
+                "bash",
+                str(ROOT / "hooks" / "find_review.sh"),
+                "--result-file",
+                str(result_file),
+                "--session-id",
+                session_id,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        wrong_session = subprocess.run(
+            [
+                "bash",
+                str(ROOT / "hooks" / "find_review.sh"),
+                "--result-file",
+                str(result_file),
+                "--session-id",
+                "session-stale",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        payload = json.loads(result_file.read_text(encoding="utf-8"))
+        review.write_text(review.read_text(encoding="utf-8") + "replaced\n", encoding="utf-8")
+        replaced_review = subprocess.run(
+            [
+                "bash",
+                str(ROOT / "hooks" / "find_review.sh"),
+                "--result-file",
+                str(result_file),
+                "--session-id",
+                session_id,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    test("manual result records exact session", payload["session_id"] == session_id, str(payload))
+    test("manual result records exact review path", payload["review_path"] == str(review), str(payload))
+    test("manual result records exact review hash", len(payload.get("review_sha256", "")) == 64, str(payload))
+    test("exact result lookup streams current review bytes", success.returncode == 0 and success.stdout == review_text, success.stderr)
+    test("exact result lookup rejects wrong session", wrong_session.returncode != 0, wrong_session.stdout)
+    test("exact result lookup rejects replaced review bytes", replaced_review.returncode != 0, replaced_review.stdout)
+
+
 def test_install_snippet_uses_protocol_placeholder() -> None:
     text = (ROOT / "claude_md_snippet.md").read_text(encoding="utf-8")
     test("install snippet has protocol placeholder", "{{REVIEW_RESPONSE_PROTOCOL}}" in text)
+    test("install snippet uses exact manual wrapper", "hooks/run_manual_review.sh" in text)
+    test("install snippet rejects stale latest fallback", "do not fall back to an older `latest.md`" in text)
+
+
+def test_manual_wrapper_does_not_return_stale_review_after_identity_failure() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        state_dir = root / "state"
+        reviews_dir = root / "reviews"
+        stale = reviews_dir / "requested-session" / "latest.md"
+        transcript = root / "codex.jsonl"
+        stale.parent.mkdir(parents=True)
+        stale.write_text("stale review", encoding="utf-8")
+        transcript.write_text(
+            json.dumps({"type": "session_meta", "payload": {"id": "different-session"}}) + "\n",
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["OVERWATCH_ADAPTER"] = "codex"
+        env["OVERWATCH_BACKEND"] = "codex_exec"
+        env["OVERWATCH_STATE_DIR"] = str(state_dir)
+        env["OVERWATCH_REVIEWS_DIR"] = str(reviews_dir)
+        result = subprocess.run(
+            [
+                "bash",
+                str(ROOT / "hooks" / "run_manual_review.sh"),
+                "--session-id",
+                "requested-session",
+                "--transcript",
+                str(transcript),
+                "--cwd",
+                str(root),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+
+    test("manual wrapper fails on transcript identity mismatch", result.returncode != 0, result.stdout)
+    test("manual wrapper does not print stale review", str(stale) not in result.stdout, result.stdout)
 
 
 def test_prompts_can_load_from_file_without_caller_pythonpath() -> None:
@@ -220,6 +334,49 @@ def test_prompts_can_load_from_file_without_caller_pythonpath() -> None:
     assert spec.loader is not None
     spec.loader.exec_module(module)
     test("standalone prompts import exposes review prompt", "Anchor agenda drift" in module.OVERWATCH_SYSTEM_PROMPT)
+
+
+def test_find_review_uses_project_boundaries_and_metadata() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        state = root / "state"
+        reviews = root / "reviews"
+        allowed = root / "client-a"
+        sibling = root / "client-a-secret"
+        allowed.mkdir()
+        sibling.mkdir()
+        state.mkdir()
+        reviews.mkdir()
+        sid = "safe-session"
+        latest = reviews / sid / "latest.md"
+        latest.parent.mkdir()
+        latest.write_text(
+            f"<!-- Overwatch Review #1 | now | session: {sid} | project: {allowed} -->\n",
+            encoding="utf-8",
+        )
+        (state / "session_map.json").write_text(
+            json.dumps({str(allowed): sid}),
+            encoding="utf-8",
+        )
+        colliding_fallback = reviews / f"_current_{sibling.name}.md"
+        colliding_fallback.write_text(
+            f"<!-- Overwatch Review #1 | now | session: other | project: {allowed} -->\n",
+            encoding="utf-8",
+        )
+        env = {
+            **os.environ,
+            "OVERWATCH_STATE_DIR": str(state),
+            "OVERWATCH_REVIEWS_DIR": str(reviews),
+        }
+        result = subprocess.run(
+            ["bash", str(ROOT / "hooks" / "find_review.sh"), str(sibling)],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=env,
+        )
+
+    test("find_review rejects sibling-prefix session map", result.stdout.strip() == "", result.stdout)
 
 
 if __name__ == "__main__":
@@ -232,6 +389,9 @@ if __name__ == "__main__":
     test_auto_context_embeds_protocol_and_review_text()
     test_manual_context_embeds_protocol_and_commands()
     test_hooks_use_shared_protocol_builders()
+    test_manual_result_lookup_rejects_stale_or_wrong_session_review()
     test_install_snippet_uses_protocol_placeholder()
+    test_manual_wrapper_does_not_return_stale_review_after_identity_failure()
     test_prompts_can_load_from_file_without_caller_pythonpath()
+    test_find_review_uses_project_boundaries_and_metadata()
     print("review_response_protocol tests passed")

@@ -17,28 +17,29 @@ An independent AI reviewer that monitors your coding sessions and provides perio
 
 **Manual trigger execution** (follow the command in `[Overwatch Manual Trigger]`, or use this template):
 ```bash
-python3 {{OVERWATCH_DIR}}/overwatch.py --session-id "<SID>" --transcript "<PATH>" --cwd "$(pwd)" --force 2>&1
+bash {{OVERWATCH_DIR}}/hooks/run_manual_review.sh --session-id "<SID>" --transcript "<PATH>" --cwd "$(pwd)"
 ```
-Then read the review: `bash {{OVERWATCH_DIR}}/hooks/find_review.sh "$(pwd)"` to get the file path, and present the content.
-
-**After presenting any review**, clean up the trigger file:
-```bash
-rm -f {{OVERWATCH_DIR}}/state/latest_trigger.json
-```
+The command streams the exact hash-verified review bytes for the same native transcript session. Present that output; if the command fails, do not fall back to an older `latest.md`. Use the exact cleanup command supplied in the trigger context because trigger files are session-bound.
 
 **Fallback** (if user triggers a review but no `[Overwatch]` content appears in your context):
 
-Step 1 — Check trigger file:
+Step 1 — Resolve the current session without guessing:
 ```bash
-cat {{OVERWATCH_DIR}}/state/latest_trigger.json 2>/dev/null
+SESSION_JSON="$(bash {{OVERWATCH_DIR}}/hooks/find_session.sh --json "$(pwd)")"
+SID="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["session_id"])' <<< "$SESSION_JSON")"
+TRANSCRIPT="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["transcript_path"])' <<< "$SESSION_JSON")"
 ```
-If it exists: `type: "auto_review"` → read `review_path` and present; `type: "manual_trigger"` → run the review command above with `session_id` and `transcript_path` from the file.
+If this reports multiple sessions, stop and ask for the exact task instead of using another session's review.
 
-Step 2 — If no trigger file, try `find_session.sh` (last resort):
+Step 2 — Only after a unique `SID` is resolved, inspect that session's trigger:
 ```bash
-read SID TRANSCRIPT <<< $(bash {{OVERWATCH_DIR}}/hooks/find_session.sh)
+cat "{{OVERWATCH_DIR}}/state/triggers/${SID}.json" 2>/dev/null
 ```
-If both `SID` and `TRANSCRIPT` are non-empty, run the review command with those values. If empty, the session is too new — tell the user: "Overwatch needs a few turns of conversation before it can review. Continue working and try again shortly."
+If it is `auto_review`, do not reopen `review_path` directly. Stream the exact hash-verified bytes:
+```bash
+python3 "{{OVERWATCH_DIR}}/trigger_state.py" read-auto-review --state-dir "${OVERWATCH_STATE_DIR:-{{OVERWATCH_DIR}}/state}" --session-id "$SID"
+```
+Present only that command's successful output. If it is `manual_trigger`, run the wrapper above with its exact `session_id`, `transcript_path`, and `cwd`. If no unique session or trigger exists, tell the user that Overwatch needs a few more turns before review.
 
-**Important**: Prefer `session_id` and `transcript_path` from `additionalContext` or trigger file over `find_session.sh` — multiple concurrent sessions may exist.
+**Important**: Prefer `session_id` and `transcript_path` from `additionalContext`. Never inspect a global latest trigger; multiple concurrent sessions may exist.
 <!-- OVERWATCH:END -->

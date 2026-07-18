@@ -1,0 +1,5 @@
+Builder: [Anchor] Current: A > Y
+Builder: anchor.py finish --conclusion done-y
+Tool: status: resumed; current: A; requires_parent_synthesis: true
+Builder: anchor.py next
+Tool: status: advanced; current: B

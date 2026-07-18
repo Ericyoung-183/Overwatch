@@ -20,6 +20,16 @@ from prompts import OVERWATCH_SYSTEM_PROMPT  # noqa: E402
 
 
 FIXTURE_DIR = ROOT / "tests" / "fixtures" / "anchor_drift"
+REQUIRED_RUNTIME_CATEGORIES = {
+    "missing-whole-picture",
+    "false-presentation-ack",
+    "missing-presentation-ack",
+    "topic-switch-without-interrupt",
+    "unsynced-todo-agenda",
+    "unsupported-todo-misread",
+    "source-agenda-mismatch",
+    "missing-parent-synthesis",
+}
 
 
 def test(name: str, condition: bool, detail: str = "") -> None:
@@ -36,6 +46,12 @@ def load_expected() -> list[dict[str, str]]:
 
 def test_prompt_contains_anchor_drift_rubric() -> None:
     rubric = format_anchor_drift_rubric()
+    category_ids = {category["id"] for category in ANCHOR_DRIFT_CATEGORIES}
+    test(
+        "runtime Anchor obligations are represented in the review rubric",
+        REQUIRED_RUNTIME_CATEGORIES.issubset(category_ids),
+        str(sorted(REQUIRED_RUNTIME_CATEGORIES - category_ids)),
+    )
     for category in ANCHOR_DRIFT_CATEGORIES:
         test(
             f"review prompt contains {category['id']}",
@@ -52,6 +68,16 @@ def test_prompt_contains_anchor_drift_rubric() -> None:
             category["severity"] in rubric,
             rubric,
         )
+        test(
+            f"rubric exposes evidence level for {category['id']}",
+            f"[{category['evidence_level']}]" in rubric,
+            rubric,
+        )
+    test(
+        "prompt prevents heuristic overclaiming",
+        "Never present a heuristic candidate as a confirmed failure" in OVERWATCH_SYSTEM_PROMPT,
+        OVERWATCH_SYSTEM_PROMPT,
+    )
 
 
 def test_drift_fixtures_flag_expected_categories() -> None:
@@ -73,7 +99,15 @@ def test_drift_fixtures_flag_expected_categories() -> None:
         )
 
 
+def test_assistant_list_without_user_sequential_intent_is_not_flagged() -> None:
+    findings = classify_anchor_drift(
+        "Assistant: 总结三个发现：1. A 2. B 3. C\nUser: 这个总结很清楚。"
+    )
+    test("assistant summary alone does not trigger capture", findings == [], str(findings))
+
+
 if __name__ == "__main__":
     test_prompt_contains_anchor_drift_rubric()
     test_drift_fixtures_flag_expected_categories()
+    test_assistant_list_without_user_sequential_intent_is_not_flagged()
     print("anchor drift fixture tests passed")

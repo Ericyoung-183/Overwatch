@@ -22,6 +22,14 @@ def _truncate(text: str, max_chars: int = MAX_TURN_CONTENT_CHARS) -> str:
     )
 
 
+def _text_value(value) -> str:
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    return json.dumps(value, ensure_ascii=False)
+
+
 def _is_skip_user_message(content: str) -> bool:
     """Check if a user message is meta/system and should be skipped."""
     for pattern in SKIP_USER_PATTERNS:
@@ -41,33 +49,67 @@ def _extract_assistant_blocks(content_list: list) -> tuple[str, str, list[dict]]
             continue
         block_type = block.get("type", "")
         if block_type == "text":
-            texts.append(block.get("text", ""))
+            texts.append(_text_value(block.get("text", "")))
         elif block_type == "thinking":
-            thinkings.append(block.get("thinking", ""))
+            thinkings.append(_text_value(block.get("thinking", "")))
         elif block_type == "tool_use":
-            name = block.get("name", "")
+            name = _text_value(block.get("name", ""))
             tool_uses.append({
                 "name": name,
                 "input_summary": _summarize_tool_input(name, block.get("input", {})),
             })
+        elif block_type in {"image", "input_image"}:
+            texts.append("[image]")
 
     return "\n".join(texts), "\n".join(thinkings), tool_uses
 
 
-def _summarize_tool_input(tool_name: str, tool_input: dict) -> str:
+def _extract_user_blocks(content) -> tuple[str, list[dict]]:
+    if isinstance(content, str):
+        return content, []
+    if not isinstance(content, list):
+        return "", []
+    texts: list[str] = []
+    tool_results: list[dict] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type", "")
+        if block_type in {"text", "input_text"}:
+            value = block.get("text") or block.get("input_text") or ""
+            if isinstance(value, str) and value:
+                texts.append(value)
+        elif block_type in {"image", "input_image"}:
+            texts.append("[image]")
+        elif block_type == "tool_result":
+            value = block.get("content", "")
+            if not isinstance(value, str):
+                value = json.dumps(value, ensure_ascii=False)
+            tool_results.append(
+                {
+                    "name": str(block.get("tool_use_id") or "tool_result"),
+                    "content": _truncate(value, 2000),
+                }
+            )
+    return "\n".join(texts), tool_results
+
+
+def _summarize_tool_input(tool_name: str, tool_input) -> str:
     """Extract key info from tool input. Preserves detail for code-modifying tools."""
     if not tool_input:
         return ""
+    if not isinstance(tool_input, dict):
+        return f"input: {_truncate(_text_value(tool_input), 500)}"
 
     if tool_name == "Write":
-        path = tool_input.get("file_path", "")
-        content = tool_input.get("content", "")
+        path = _text_value(tool_input.get("file_path", ""))
+        content = _text_value(tool_input.get("content", ""))
         return f"file: {path}\n```\n{_truncate(content, 1000)}\n```"
 
     if tool_name == "Edit":
-        path = tool_input.get("file_path", "")
-        old = tool_input.get("old_string", "")
-        new = tool_input.get("new_string", "")
+        path = _text_value(tool_input.get("file_path", ""))
+        old = _text_value(tool_input.get("old_string", ""))
+        new = _text_value(tool_input.get("new_string", ""))
         return (
             f"file: {path}\n"
             f"--- old ---\n{_truncate(old, 500)}\n"
@@ -75,21 +117,40 @@ def _summarize_tool_input(tool_name: str, tool_input: dict) -> str:
         )
 
     if tool_name == "Bash":
-        cmd = tool_input.get("command", "")
+        cmd = _text_value(tool_input.get("command", ""))
         return f"cmd: {_truncate(cmd, 500)}"
 
     if "file_path" in tool_input:
-        return f"file: {tool_input['file_path']}"
+        return f"file: {_text_value(tool_input['file_path'])}"
     if "pattern" in tool_input:
-        path = tool_input.get("path", "")
-        return f"pattern: {tool_input['pattern']}" + (f" in {path}" if path else "")
+        path = _text_value(tool_input.get("path", ""))
+        pattern = _text_value(tool_input["pattern"])
+        return f"pattern: {pattern}" + (f" in {path}" if path else "")
     if "query" in tool_input:
-        return f"query: {tool_input['query'][:200]}"
+        return f"query: {_text_value(tool_input['query'])[:200]}"
     if "prompt" in tool_input:
-        return f"prompt: {tool_input['prompt'][:200]}"
+        return f"prompt: {_text_value(tool_input['prompt'])[:200]}"
 
     keys = list(tool_input.keys())[:5]
     return f"keys: {', '.join(keys)}"
+
+
+def transcript_session_ids(transcript_path: str) -> set[str]:
+    session_ids: set[str] = set()
+    with open(transcript_path, "r", encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            session_id = str(
+                record.get("sessionId") or record.get("session_id") or ""
+            ).strip()
+            if session_id:
+                session_ids.add(session_id)
+    return session_ids
 
 
 def parse(transcript_path: str, offset: int = 0) -> list[Turn]:
@@ -118,6 +179,8 @@ def parse(transcript_path: str, offset: int = 0) -> list[Turn]:
                 obj = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(obj, dict):
+                continue
 
             msg_type = obj.get("type", "")
 
@@ -126,25 +189,36 @@ def parse(transcript_path: str, offset: int = 0) -> list[Turn]:
 
             if msg_type == "user":
                 message = obj.get("message", {})
+                if not isinstance(message, dict):
+                    continue
                 content = message.get("content", "")
-                if not isinstance(content, str):
+                text, tool_results = _extract_user_blocks(content)
+                if obj.get("isMeta") or (text and _is_skip_user_message(text)):
                     continue
-                if obj.get("isMeta") or _is_skip_user_message(content):
-                    continue
-                if not content.strip():
-                    continue
-
-                turns.append(Turn(
-                    index=turn_index,
-                    role="user",
-                    content=_truncate(content),
-                    timestamp=obj.get("timestamp", ""),
-                    line_number=line_num,
-                ))
-                turn_index += 1
+                if text.strip():
+                    turns.append(Turn(
+                        index=turn_index,
+                        role="user",
+                        content=text,
+                        timestamp=obj.get("timestamp", ""),
+                        line_number=line_num,
+                    ))
+                    turn_index += 1
+                for result in tool_results:
+                    turns.append(Turn(
+                        index=turn_index,
+                        role="tool_use",
+                        content=result["content"],
+                        tool_name=result["name"],
+                        timestamp=obj.get("timestamp", ""),
+                        line_number=line_num,
+                    ))
+                    turn_index += 1
 
             elif msg_type == "assistant":
                 message = obj.get("message", {})
+                if not isinstance(message, dict):
+                    continue
                 content_list = message.get("content", [])
                 if not isinstance(content_list, list):
                     continue
@@ -155,7 +229,7 @@ def parse(transcript_path: str, offset: int = 0) -> list[Turn]:
                     turns.append(Turn(
                         index=turn_index,
                         role="assistant",
-                        content=_truncate(text),
+                        content=text,
                         thinking=_truncate(thinking, 500),
                         timestamp=obj.get("timestamp", ""),
                         line_number=line_num,

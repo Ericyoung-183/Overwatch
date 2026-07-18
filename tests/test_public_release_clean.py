@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Public release hygiene checks for tracked Overwatch files."""
+"""Public release hygiene checks for the full Overwatch release candidate."""
 
 from __future__ import annotations
 
@@ -28,9 +28,9 @@ def test(name: str, condition: bool, detail: str = "") -> None:
     raise AssertionError(name)
 
 
-def tracked_files() -> list[str]:
+def candidate_files() -> list[str]:
     output = subprocess.check_output(
-        ["git", "-C", str(ROOT), "ls-files"],
+        ["git", "-C", str(ROOT), "ls-files", "-co", "--exclude-standard"],
         text=True,
     )
     return [line for line in output.splitlines() if line]
@@ -38,7 +38,7 @@ def tracked_files() -> list[str]:
 
 def test_public_files_have_no_eric_local_paths() -> None:
     offenders: list[str] = []
-    for rel in tracked_files():
+    for rel in candidate_files():
         if rel in ALLOWED_TRACKED_PATHS:
             continue
         path = ROOT / rel
@@ -52,12 +52,12 @@ def test_public_files_have_no_eric_local_paths() -> None:
             if needle in text:
                 offenders.append(f"{rel}: contains {needle!r}")
 
-    test("tracked public files avoid Eric-local paths", not offenders, "\n".join(offenders))
+    test("candidate public files avoid Eric-local paths", not offenders, "\n".join(offenders))
 
 
 def test_public_files_avoid_deprecated_codex_hook_feature_name() -> None:
     offenders: list[str] = []
-    for rel in tracked_files():
+    for rel in candidate_files():
         path = ROOT / rel
         if not path.is_file():
             continue
@@ -68,7 +68,40 @@ def test_public_files_avoid_deprecated_codex_hook_feature_name() -> None:
         if DEPRECATED_CODEX_HOOK_FEATURE in text:
             offenders.append(f"{rel}: contains deprecated Codex hook feature name")
 
-    test("tracked public files avoid deprecated Codex hook feature name", not offenders, "\n".join(offenders))
+    test("candidate public files avoid deprecated Codex hook feature name", not offenders, "\n".join(offenders))
+
+
+def test_candidate_tree_contains_no_symbolic_links() -> None:
+    offenders = [rel for rel in candidate_files() if (ROOT / rel).is_symlink()]
+    test("candidate public files contain no symbolic links", not offenders, "\n".join(offenders))
+
+
+def test_hooks_do_not_interpolate_install_path_into_python_source() -> None:
+    offenders = []
+    for name in (
+        "claude_code_prompt.sh",
+        "claude_code_stop.sh",
+        "codex_prompt.sh",
+        "codex_stop.sh",
+    ):
+        text = (ROOT / "hooks" / name).read_text(encoding="utf-8")
+        if "sys.path.insert(0, '$OVERWATCH_DIR')" in text:
+            offenders.append(name)
+    test("hook Python imports survive quoted install paths", not offenders, "\n".join(offenders))
+
+
+def test_runtime_hooks_have_no_global_latest_trigger() -> None:
+    runtime_files = [
+        ROOT / "hooks" / "codex_prompt.sh",
+        ROOT / "hooks" / "claude_code_prompt.sh",
+        ROOT / "claude_md_snippet.md",
+    ]
+    offenders = [
+        str(path)
+        for path in runtime_files
+        if "latest_trigger.json" in path.read_text(encoding="utf-8")
+    ]
+    test("runtime hooks use only session-bound triggers", not offenders, "\n".join(offenders))
 
 
 def test_release_check_script_exists() -> None:
@@ -79,10 +112,34 @@ def test_release_check_script_exists() -> None:
         test("release check includes Claude compatibility", "test_claude_hook_compat.py" in text)
         test("release check includes Codex compatibility", "test_codex_hook_observability.py" in text)
         test("release check includes public hygiene", "test_public_release_clean.py" in text)
+        test(
+            "release check isolates runtime state",
+            all(
+                marker in text
+                for marker in [
+                    'OVERWATCH_STATE_DIR="$RUNTIME_TMP/state"',
+                    'OVERWATCH_REVIEWS_DIR="$RUNTIME_TMP/reviews"',
+                    'OVERWATCH_LOG_FILE="$RUNTIME_TMP/overwatch.log"',
+                    'PYTHONPYCACHEPREFIX="$RUNTIME_TMP/pycache"',
+                ]
+            ),
+            text,
+        )
+        test("release check snapshots candidate tree", text.count("candidate_manifest") >= 3, text)
+        test("release check verifies candidate bytes and modes", "candidate.before" in text and "candidate.after" in text, text)
+        test("release mutation gate includes ignored files", 'root.rglob("*")' in text and "git ls-files" not in text, text)
+        test(
+            "release mutation gate excludes only named runtime artifacts",
+            all(name in text for name in ["overwatch.log", '"state"', '"reviews"', '"__pycache__"']),
+            text,
+        )
 
 
 if __name__ == "__main__":
     test_public_files_have_no_eric_local_paths()
     test_public_files_avoid_deprecated_codex_hook_feature_name()
+    test_candidate_tree_contains_no_symbolic_links()
+    test_hooks_do_not_interpolate_install_path_into_python_source()
+    test_runtime_hooks_have_no_global_latest_trigger()
     test_release_check_script_exists()
     print("public release clean tests passed")

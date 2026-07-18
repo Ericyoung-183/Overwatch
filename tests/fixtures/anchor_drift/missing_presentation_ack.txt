@@ -1,0 +1,6 @@
+[Anchor]
+Current: A
+Pending Whole Picture [presentation-1]
+Assistant: Whole Picture: Review
+1. A ← 当前
+2. B

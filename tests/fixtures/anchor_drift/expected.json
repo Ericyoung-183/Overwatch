@@ -5,7 +5,17 @@
     "expected_severity": "HIGH"
   },
   {
+    "fixture": "assistant_split_root_capture.txt",
+    "expected_category": "missed-root-capture",
+    "expected_severity": "HIGH"
+  },
+  {
     "fixture": "missed_child_capture.txt",
+    "expected_category": "missed-child-capture",
+    "expected_severity": "HIGH"
+  },
+  {
+    "fixture": "assistant_split_child_capture.txt",
     "expected_category": "missed-child-capture",
     "expected_severity": "HIGH"
   },
@@ -17,6 +27,11 @@
   {
     "fixture": "premature_parent_return.txt",
     "expected_category": "premature-parent-return",
+    "expected_severity": "HIGH"
+  },
+  {
+    "fixture": "missing_parent_synthesis.txt",
+    "expected_category": "missing-parent-synthesis",
     "expected_severity": "HIGH"
   },
   {
@@ -32,6 +47,41 @@
   {
     "fixture": "recreated_agenda_from_search.txt",
     "expected_category": "recreated-agenda-from-search",
+    "expected_severity": "HIGH"
+  },
+  {
+    "fixture": "missing_whole_picture.txt",
+    "expected_category": "missing-whole-picture",
+    "expected_severity": "MED"
+  },
+  {
+    "fixture": "false_presentation_ack.txt",
+    "expected_category": "false-presentation-ack",
+    "expected_severity": "HIGH"
+  },
+  {
+    "fixture": "missing_presentation_ack.txt",
+    "expected_category": "missing-presentation-ack",
+    "expected_severity": "MED"
+  },
+  {
+    "fixture": "topic_switch_without_interrupt.txt",
+    "expected_category": "topic-switch-without-interrupt",
+    "expected_severity": "HIGH"
+  },
+  {
+    "fixture": "unsupported_todo_misread.txt",
+    "expected_category": "unsupported-todo-misread",
+    "expected_severity": "HIGH"
+  },
+  {
+    "fixture": "unsynced_todo_agenda.txt",
+    "expected_category": "unsynced-todo-agenda",
+    "expected_severity": "HIGH"
+  },
+  {
+    "fixture": "source_agenda_mismatch.txt",
+    "expected_category": "source-agenda-mismatch",
     "expected_severity": "HIGH"
   }
 ]

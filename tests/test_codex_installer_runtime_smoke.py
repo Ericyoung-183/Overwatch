@@ -6,13 +6,16 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "install_codex.sh"
-STATE_DIR = ROOT / "state"
+RUNTIME_TMP = tempfile.TemporaryDirectory(prefix="overwatch-codex-installer-smoke-")
+STATE_DIR = Path(RUNTIME_TMP.name) / "state"
+STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def test(name: str, condition: bool, detail: str = "") -> None:
@@ -27,6 +30,7 @@ def run_installer(hooks_path: Path, relay_dir: Path) -> None:
     env = os.environ.copy()
     env["CODEX_HOOKS_PATH"] = str(hooks_path)
     env["OVERWATCH_CODEX_STATUS_RELAY_DIR"] = str(relay_dir)
+    env["OVERWATCH_CODEX_COMMAND"] = sys.executable
     subprocess.run(
         ["bash", str(INSTALLER)],
         text=True,
@@ -47,6 +51,10 @@ def hook_commands(data: dict, event: str) -> list[str]:
 
 
 def run_installed_command(command: str, payload: dict[str, str]) -> dict[str, object]:
+    env = os.environ.copy()
+    env["OVERWATCH_STATE_DIR"] = str(STATE_DIR)
+    env["OVERWATCH_REVIEWS_DIR"] = str(Path(RUNTIME_TMP.name) / "reviews")
+    env["OVERWATCH_LOG_FILE"] = str(Path(RUNTIME_TMP.name) / "overwatch.log")
     proc = subprocess.run(
         command,
         input=json.dumps(payload),
@@ -54,6 +62,7 @@ def run_installed_command(command: str, payload: dict[str, str]) -> dict[str, ob
         shell=True,
         capture_output=True,
         check=True,
+        env=env,
     )
     return json.loads(proc.stdout)
 
@@ -74,7 +83,7 @@ def test_installed_codex_commands_execute_hook_contracts() -> None:
     sid = "codex-installer-runtime-smoke"
     status_file = STATE_DIR / f"stop_status_{sid}.json"
     map_file = STATE_DIR / "session_map.json"
-    trigger_file = STATE_DIR / "latest_trigger.json"
+    trigger_file = STATE_DIR / "triggers" / f"{sid}.json"
     restore_map = preserve_file(map_file)
     restore_trigger = preserve_file(trigger_file)
     status_file.unlink(missing_ok=True)
@@ -112,6 +121,7 @@ def test_installed_codex_commands_execute_hook_contracts() -> None:
                 json.dumps(
                     {
                         "continue": True,
+                        "session_id": sid,
                         "systemMessage": "Stop Says INSTALL SMOKE | Overwatch: active/global",
                     }
                 ),

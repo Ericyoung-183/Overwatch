@@ -21,15 +21,17 @@ You <-> Claude Code (Builder)     Overwatch (Independent Reviewer)
 Overwatch hooks into Claude Code or Codex Desktop's event system. Both runtimes use the same trigger policy: reviews never fire below the minimum turn floor (default: 5), always fire at the hard ceiling (default: 15), and can fire early between those bounds when smart signals are detected.
 
 1. **Parses** the full session JSONL transcript
-2. **Builds context** using a rolling summary (for older turns) + verbatim recent window
+2. **Builds context** using a rolling summary (for older turns) + exact recent user/assistant messages with bounded tool evidence
 3. **Runs the configured review backend** with its own independent review prompt
 4. **Injects** the review into your next conversation turn
 
 The Builder then presents the review and responds to each point.
 
-Pending auto-review delivery markers expire after 72 hours by default. Expiry only removes the delivery marker, not the saved review file, so old reviews remain available without surprising a resumed session days later.
+Pending auto-review delivery markers expire after 72 hours by default. Expiry only removes the delivery marker, not the saved review file, so old reviews remain available without surprising a resumed session days later. Each marker binds the exact session ID and review SHA-256; a marker from another session or a replaced review is rejected and preserved for diagnosis. Review generation first persists a recoverable delivery intent. The Hook keeps the exact pending marker until the Builder presents the full review and runs the session/hash-bound acknowledgement command embedded in that delivery. A rejected Hook response therefore retries on the next prompt instead of recording a false receipt. Fresh authorized reviews are injected in full so the Builder can satisfy the verbatim-delivery protocol.
 
 Smart trigger signals are shared across Claude Code and Codex: explicit review/check requests, user corrections, dense file-edit activity, and recent `git commit` / `git push` boundaries.
+
+When Anchor is installed, both prompt hooks apply a strict two-signal capture gate: a concrete multiline or inline numbered list plus explicit item-by-item intent. Root, child, and temporary interrupt targets are distinguished before work begins. Assistant-sourced lists require exact transcript/session identity; persisted candidates are bound to the same session and working directory. Exact source bytes remain recoverable from the candidate JSON until the matching Anchor agenda exists or the Builder records a non-empty dismissal reason. Explanatory lists and generic root-level “continue” prompts remain quiet.
 
 ### Prerequisites
 
@@ -63,7 +65,7 @@ cd Overwatch
 
 The Claude Code installer automatically:
 1. Registers Stop + UserPromptSubmit hooks in your Claude Code settings
-2. Injects an Overwatch configuration section into your global `CLAUDE.md` (wrapped in `<!-- OVERWATCH:BEGIN/END -->` markers for clean removal)
+2. Injects an Overwatch configuration section into your global `CLAUDE.md` (wrapped in `<!-- OVERWATCH:BEGIN/END -->` markers for clean removal). Replacement and uninstall require exactly one complete marker pair; incomplete, duplicate, or unmarked lookalike content is preserved.
 
 ### Codex Desktop / Codex CLI
 
@@ -79,6 +81,10 @@ The Codex installer automatically:
 2. Uses the Codex transcript adapter and `codex_exec` backend in Codex runtimes
 3. Keeps Claude Code defaults unchanged
 
+Before changing hooks, the installer verifies every required runtime module and the configured Codex executable. A failed preflight leaves the hooks file untouched.
+
+Run `./uninstall.sh` to remove the exact hooks owned by this Overwatch installation while preserving unrelated or merely similarly named hooks and saved Overwatch files. Claude hooks, Codex hooks, and the owned `CLAUDE.md` section are preflighted and staged as one transaction; a failure restores every already-replaced file. `CC_SETTINGS_PATH` is the Claude settings authority for both hooks and the adjacent `CLAUDE.md` snippet.
+
 If you run a local status relay or workflow bundle, pass it during install:
 
 ```bash
@@ -89,11 +95,15 @@ OVERWATCH_CODEX_STATUS_RELAY_DIR=/path/to/relay/state ./install_codex.sh
 
 Type `overwatch`, `second opinion`, or `第二意见` in Claude Code or Codex to get an immediate review.
 
+Each manual trigger reserves a unique managed result file inside `OVERWATCH_STATE_DIR`. The review command first validates the session ID as a safe file key, binds it to the native ID inside the Codex or Claude transcript, returns an immutable numbered history file, and records that file's SHA-256. Lookup reads the review once, validates the result session, exact bytes, and review metadata, then streams those same verified bytes instead of returning a path that must be reopened. Session discovery is stored as a locked multi-session registry, and fallback triggers live under `state/triggers/<session-id>.json`; concurrent tasks never share a latest-trigger file. Auto-review fallback triggers retain the authorized review hash, and `trigger_state.py read-auto-review` streams only the exact bytes matching it. A failed, replaced, ambiguous, or crossed review exits nonzero instead of falling back to a stale `latest.md`.
+
 ### CLI Usage
 
 ```bash
 python3 overwatch.py --session-id <uuid> --transcript <path> --force
 ```
+
+The supplied ID must be the single native session ID recorded inside that transcript. Missing, mixed, or mismatched identity fails closed.
 
 ## Features
 
@@ -123,7 +133,7 @@ Each review builds on the previous one. Overwatch reads its last review and focu
 
 Sessions can run 100+ turns. Overwatch handles this with:
 - **Rolling summary**: Older turns are compressed by a fast model (Haiku)
-- **Recent window**: Last N turns kept verbatim for detailed review
+- **Recent window**: Last N user/assistant exchanges kept exactly; tool calls and outputs stay explicitly bounded
 - **Incremental summarization**: Only newly-expired turns are summarized
 
 ### Domain Agnostic
@@ -139,7 +149,7 @@ TURN_THRESHOLD = 10        # Baseline interval when SMART_TRIGGER is disabled
 SMART_TRIGGER = True       # Enable early reviews between min and max when risk signals appear
 TURN_THRESHOLD_MIN = 5     # Never auto-review below this many new user turns
 TURN_THRESHOLD_MAX = 15    # Always auto-review at or above this many new user turns
-RECENT_WINDOW_SIZE = 20    # Keep last N exchanges verbatim
+RECENT_WINDOW_SIZE = 20    # Keep last N exact user/assistant exchanges
 REVIEW_BACKEND = "api"     # "api" or "codex_exec"; Codex runtimes default to codex_exec
 REVIEW_MODEL = "claude-sonnet-4-20250514"  # Model for reviews; gpt-5.5 for codex_exec
 CODEX_REASONING_EFFORT = "xhigh"  # Highest Codex reasoning effort for codex_exec
@@ -157,14 +167,15 @@ TRIGGER_KEYWORDS = ["overwatch", "second opinion", "第二意见"]  # Manual tri
 | `OVERWATCH_CODEX_EXEC_TIMEOUT` | Timeout for nested Codex review | `API_TIMEOUT` |
 | `OVERWATCH_CODEX_REASONING_EFFORT` | Codex `model_reasoning_effort` for nested reviews | `xhigh` |
 | `OVERWATCH_CODEX_STATUS_RELAY_DIR` | Optional directory containing Codex status relay files named `last_stop_says_<session>.json` | unset |
-| `OVERWATCH_CODEX_STATUS_RELAY_FILE` | Optional single status relay file for the current Codex session | unset |
+| `OVERWATCH_CODEX_STATUS_RELAY_FILE` | Optional single status relay file; payload must contain the exact current `session_id` | unset |
 | `OVERWATCH_PENDING_TTL_HOURS` | Hours a pending auto-review marker remains auto-deliverable; `0` disables expiry | `72` |
+| `OVERWATCH_ALLOWED_PROJECTS` | Colon-separated exact project roots; descendants are allowed and both hooks plus engine fail closed outside them | unset (all projects) |
 | `ANTHROPIC_API_KEY` | API backend authentication; not required for Codex `codex_exec` | required when `OVERWATCH_BACKEND=api` |
 | `ANTHROPIC_BASE_URL` | API endpoint | `https://api.anthropic.com` |
 | `OVERWATCH_REVIEW_MODEL` | Override review model | from `ANTHROPIC_MODEL` |
 | `OVERWATCH_SUMMARY_MODEL` | Override summary model | from `ANTHROPIC_DEFAULT_HAIKU_MODEL` |
 | `OVERWATCH_INCLUDE_LEGACY_CONTEXT` | Include cross-runtime legacy context in review prompts | `false` |
-| `OVERWATCH_ENABLE_ANCHOR_DRIFT` | Anchor-specific agenda drift rubric: `auto`, `true`, or `false`; `auto` enables only when Anchor helper or context is detected | `auto` |
+| `OVERWATCH_ENABLE_ANCHOR_DRIFT` | Anchor-specific agenda drift rubric: `auto`, `true`, or `false`; `auto` enables only for actual Anchor context or a pending capture gate | `auto` |
 | `OVERWATCH_CC_PROJECTS` | Claude Code projects directory | `~/.claude/projects` |
 
 ## Architecture
@@ -202,11 +213,24 @@ overwatch/
 ### Key Design Decisions
 
 - **Zero external dependencies**: Pure Python stdlib (`urllib`, `json`, `dataclasses`). No `pip install` needed.
-- **Adapter pattern**: Transcript parsing is pluggable. Add support for Cursor, Copilot, etc. by implementing a new adapter.
+- **Adapter pattern**: Transcript parsing is pluggable. The built-in adapters preserve current Codex `custom_tool_call`/output and Anchor developer-context records, plus Claude block text, image markers, tool use, and tool results.
+- **Guarded prompt context**: Anchor agenda labels are escaped and marked as untrusted data before hook injection. Context caps preserve mandatory tracker, item, cursor, and pending-presentation fields while truncating only optional diagnostics; manual-review command arguments are shell-quoted.
+- **Anchor helper compatibility**: When active Anchor state exists, Codex prompt delivery validates Anchor's structured `capabilities` response and blocks mutation when the installed helper lacks the V2.1 state/context contract. Untrusted agenda labels cannot spoof this check.
+- **Review boundary precedence**: An explicit read-only, findings-only, frozen-candidate, or no-edit request overrides the default fix-and-persist review protocol.
 - **Non-blocking hooks**: Stop hook always returns `{"continue": true}` within 5 seconds. Reviews run asynchronously.
 - **File-based state**: No database. State is JSON files in `state/`. Reviews are Markdown in `reviews/`.
+- **Private review artifacts**: Persistent review directories are forced to `0700` and review files to `0600`; numbered history remains immutable.
+- **Read-only reviewer tools**: Git refs are resolved to object IDs before use, option-like refs are rejected, and external diff/text-conversion helpers are disabled.
+- **Symlink-safe archives**: Session/history directories and immutable review files are opened relative to no-follow directory descriptors, so a symlink cannot redirect an archive outside `reviews/`.
+- **Directory-durable state**: State, trigger, marker, receipt, manual-result, and review writes fsync both file contents and the containing directory after atomic replacement.
+- **Retry-safe review cursor**: A failed backend or invalid review output records cooldown/error state without advancing `last_reviewed_turn`, so the same transcript can retry after cooldown.
+- **Recoverable review delivery**: Archive creation persists a delivery intent before marker publication; only the Builder's post-presentation, session/hash-bound acknowledgement converts the exact marker into a delivery receipt. Interrupted or rejected Hook delivery retries without calling the review backend again.
+- **Compare-and-swap pending cleanup**: Expiry cleanup deletes only the marker bytes it inspected and restores a concurrently replaced marker.
+- **Path-safe session identity**: Runtime hooks, engine state, pending markers, and review lookup accept only bounded ASCII session IDs. Registry fallback requires an exact project root; a live Codex thread ID takes precedence.
 - **Runtime separation**: Claude Code keeps the Claude/API default path. Codex app/CLI can use the Codex adapter plus `codex_exec` backend without changing Claude defaults.
 - **Shared trigger policy**: Claude Code and Codex use the same `trigger_policy.py` decision logic; runtime hooks only adapt transcript parsing and review dispatch.
+- **Relocatable installation**: Both installers replace stale or duplicate managed Hook paths with one shell-quoted current path. Hook Python imports receive the install directory through the environment, so spaces and quotes remain safe. Install and shared-uninstall replacements compare the exact configuration bytes read during preflight and refuse to overwrite concurrent external edits.
+- **Mutation-complete release gate**: Release checks snapshot candidate files and modes recursively, including ignored files; only named runtime/cache artifacts such as `state/`, `reviews/`, `overwatch.log`, bytecode, and editor caches are excluded.
 
 ## Custom Adapters
 
@@ -226,7 +250,7 @@ Before publishing a GitHub release, run:
 ./scripts/check_release.sh
 ```
 
-This checks public-file hygiene, Claude Code compatibility, Codex compatibility, response-protocol delivery, shell syntax, Python syntax, and whitespace errors. The public Overwatch repository must not depend on personal local paths; local workflow bundles should inject optional behavior through environment variables such as `OVERWATCH_CODEX_STATUS_RELAY_DIR`.
+This checks public-file hygiene, real-format transcript adapters, Claude Code compatibility and relocation, Codex compatibility, exact manual-review identity, response-protocol delivery, shell syntax, Python syntax, whitespace errors, and that the gate did not change candidate file bytes or modes. The public Overwatch repository must not depend on personal local paths; local workflow bundles should inject optional behavior through environment variables such as `OVERWATCH_CODEX_STATUS_RELAY_DIR`.
 
 For Codex, the release gate installs Overwatch into a temporary Codex hooks file, then executes the installed Stop and UserPromptSubmit commands with synthetic Codex hook payloads. This proves the installer output and hook command contract without touching a user's live Codex config. A live Codex Desktop or Codex CLI turn remains a manual release check when the Codex runtime does not expose a standalone hook trigger command.
 

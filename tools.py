@@ -1,5 +1,6 @@
 """Overwatch review tools: read-only operations the reviewer can invoke."""
 import os
+import re
 import subprocess
 
 from config import MAX_GIT_DIFF_CHARS
@@ -106,6 +107,23 @@ def _safe_path(project_cwd: str, relative_path: str) -> str:
     return resolved
 
 
+def _resolve_git_commit(project_cwd: str, ref: object) -> str:
+    value = str(ref or "HEAD").strip()
+    if not value or value.startswith("-") or any(ch in value for ch in ("\x00", "\n", "\r")):
+        raise ValueError("invalid git ref")
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "--end-of-options", f"{value}^{{commit}}"],
+        cwd=project_cwd,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    commit = result.stdout.strip()
+    if result.returncode != 0 or not re.fullmatch(r"[0-9a-fA-F]{40,64}", commit):
+        raise ValueError("git ref does not resolve to a commit")
+    return commit.lower()
+
+
 def execute_tool(name: str, input_data: dict, project_cwd: str) -> str:
     """Execute a tool and return the result as a string."""
     if not project_cwd or not os.path.isdir(project_cwd):
@@ -121,8 +139,10 @@ def execute_tool(name: str, input_data: dict, project_cwd: str) -> str:
             search_path = _safe_path(project_cwd, path) if path else project_cwd
         except ValueError as e:
             return f"(error: {e})"
-        cmd = ["grep", "-rn", "--include", include, pattern] if include else ["grep", "-rn", pattern]
-        cmd.append(search_path)
+        cmd = ["grep", "-rn"]
+        if include:
+            cmd.extend(["--include", include])
+        cmd.extend(["--", pattern, search_path])
         return _truncate(_run_cmd(cmd, project_cwd))
 
     elif name == "read_file":
@@ -154,7 +174,21 @@ def execute_tool(name: str, input_data: dict, project_cwd: str) -> str:
                 _safe_path(project_cwd, path)
             except ValueError as e:
                 return f"(error: {e})"
-        cmd = ["git", "diff", ref]
+        try:
+            commit = _resolve_git_commit(project_cwd, ref)
+        except (ValueError, subprocess.TimeoutExpired, OSError) as e:
+            return f"(error: {e})"
+        cmd = [
+            "git",
+            "-c",
+            "diff.external=",
+            "-c",
+            "core.attributesFile=/dev/null",
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            commit,
+        ]
         if path:
             cmd += ["--", path]
         return _truncate(_run_cmd(cmd, project_cwd), MAX_GIT_DIFF_CHARS)
@@ -162,7 +196,14 @@ def execute_tool(name: str, input_data: dict, project_cwd: str) -> str:
     elif name == "git_log":
         count = input_data.get("count", 10)
         path = input_data.get("path", "")
-        cmd = ["git", "log", f"--oneline", f"-{min(count, 50)}"]
+        if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+            return "(error: count must be a positive integer)"
+        if path:
+            try:
+                _safe_path(project_cwd, path)
+            except ValueError as e:
+                return f"(error: {e})"
+        cmd = ["git", "log", "--oneline", f"-{min(count, 50)}"]
         if path:
             cmd += ["--", path]
         return _truncate(_run_cmd(cmd, project_cwd))

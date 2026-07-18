@@ -1,81 +1,34 @@
 #!/bin/bash
 # Find the current project's active session ID and transcript path.
-# Usage: bash hooks/find_session.sh [project_directory]
-# Output: SESSION_ID TRANSCRIPT_PATH (space-separated)
+# Usage: bash hooks/find_session.sh [--json] [project_directory]
+# Output: SESSION_ID TRANSCRIPT_PATH, or a JSON object with --json.
+
+if [ "${1:-}" = "--json" ]; then
+    shift
+    RESULT=$(bash "$0" "${1:-$(pwd)}")
+    STATUS=$?
+    [ "$STATUS" -eq 0 ] || exit "$STATUS"
+    python3 - "$RESULT" <<'PY'
+import json
+import sys
+
+session_id, separator, transcript_path = sys.argv[1].partition(" ")
+if not separator or not session_id or not transcript_path:
+    raise SystemExit("find_session returned an invalid session record")
+print(json.dumps(
+    {"session_id": session_id, "transcript_path": transcript_path},
+    ensure_ascii=False,
+))
+PY
+    exit $?
+fi
 
 OVERWATCH_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT_DIR="${1:-$(pwd)}"
-MAP_FILE="${OVERWATCH_DIR}/state/session_map.json"
+STATE_DIR="${OVERWATCH_STATE_DIR:-${OVERWATCH_DIR}/state}"
+MAP_FILE="${STATE_DIR}/session_map.json"
 
-# Method 1: Look up session_map.json (written by Stop hook on each fire)
-if [ -f "$MAP_FILE" ]; then
-    RESULT=$(OW_DIR="$OVERWATCH_DIR" OW_MAP="$MAP_FILE" OW_PROJECT="$PROJECT_DIR" python3 -c "
-import json, os, sys
-sys.path.insert(0, os.environ['OW_DIR'])
-from config import CC_PROJECTS_BASE, CC_PROJECTS_FALLBACKS
-
-with open(os.environ['OW_MAP']) as f:
-    m = json.load(f)
-
-project_dir = os.environ['OW_PROJECT']
-sid = m.get(project_dir, '')
-if not sid:
-    for k, v in sorted(m.items(), key=lambda x: -len(x[0])):
-        if project_dir.startswith(k):
-            sid = v
-            break
-
-if sid:
-    search_dirs = [CC_PROJECTS_BASE] + CC_PROJECTS_FALLBACKS
-    for base in search_dirs:
-        if not os.path.isdir(base):
-            continue
-        for d in os.listdir(base):
-            t = os.path.join(base, d, sid + '.jsonl')
-            if os.path.exists(t):
-                print(f'{sid} {t}')
-                exit(0)
-" 2>/dev/null)
-
-    if [ -n "$RESULT" ]; then
-        echo "$RESULT"
-        exit 0
-    fi
-
-    # Codex Desktop keeps transcripts under ~/.codex/sessions, with the
-    # session id embedded in the rollout filename.
-    RESULT=$(OW_MAP="$MAP_FILE" OW_PROJECT="$PROJECT_DIR" python3 -c "
-import json, os
-with open(os.environ['OW_MAP']) as f:
-    m = json.load(f)
-project_dir = os.environ['OW_PROJECT']
-sid = m.get(project_dir, '')
-if not sid:
-    for k, v in sorted(m.items(), key=lambda x: -len(x[0])):
-        if project_dir.startswith(k):
-            sid = v
-            break
-if sid:
-    base = os.path.expanduser('~/.codex/sessions')
-    matches = []
-    for root, _, files in os.walk(base):
-        for name in files:
-            if name.endswith('.jsonl') and sid in name:
-                path = os.path.join(root, name)
-                matches.append((os.path.getmtime(path), path))
-    if matches:
-        print(f'{sid} {sorted(matches)[-1][1]}')
-" 2>/dev/null)
-
-    if [ -n "$RESULT" ]; then
-        echo "$RESULT"
-        exit 0
-    fi
-fi
-
-# Method 1b: Codex Desktop fallback from the live thread id.
-# This covers sessions where the prompt hook is alive but Stop has not yet
-# written a project mapping.
+# Method 1: Prefer the exact live Codex thread identity when it is available.
 if [ -n "${CODEX_THREAD_ID:-}" ]; then
     RESULT=$(OW_SID="$CODEX_THREAD_ID" python3 -c "
 import os
@@ -98,7 +51,58 @@ if matches:
     fi
 fi
 
-# Method 2: Fallback — find JSONL by scanning project dirs (only if exactly one match)
+# Method 2: Look up an exact project match in session_map.json.
+if [ -f "$MAP_FILE" ]; then
+    RESULT=$(OW_DIR="$OVERWATCH_DIR" OW_STATE="$STATE_DIR" OW_PROJECT="$PROJECT_DIR" python3 -c "
+import os, sys
+sys.path.insert(0, os.environ['OW_DIR'])
+from config import CC_PROJECTS_BASE, CC_PROJECTS_FALLBACKS
+from session_registry import sessions_for_project
+
+sessions = sessions_for_project(os.environ['OW_STATE'], os.environ['OW_PROJECT'])
+if len(sessions) > 1:
+    print(f'__AMBIGUOUS__:{len(sessions)}')
+    raise SystemExit(0)
+sid = sessions[0] if len(sessions) == 1 else ''
+
+if sid:
+    search_dirs = [CC_PROJECTS_BASE] + CC_PROJECTS_FALLBACKS
+    for base in search_dirs:
+        if not os.path.isdir(base):
+            continue
+        for d in os.listdir(base):
+            t = os.path.join(base, d, sid + '.jsonl')
+            if os.path.exists(t):
+                print(f'{sid} {t}')
+                exit(0)
+
+    base = os.path.expanduser('~/.codex/sessions')
+    matches = []
+    if os.path.isdir(base):
+        for root, _, files in os.walk(base):
+            for name in files:
+                if name.endswith('.jsonl') and sid in name:
+                    path = os.path.join(root, name)
+                    matches.append((os.path.getmtime(path), path))
+    if matches:
+        print(f'{sid} {sorted(matches)[-1][1]}')
+" 2>/dev/null)
+
+    case "$RESULT" in
+        __AMBIGUOUS__:*)
+            echo "ERROR: ${RESULT#__AMBIGUOUS__:} sessions found for this project. Use exact session context." >&2
+            exit 1
+            ;;
+    esac
+
+    if [ -n "$RESULT" ]; then
+        echo "$RESULT"
+        exit 0
+    fi
+
+fi
+
+# Method 3: Fallback — find JSONL by scanning project dirs (only if exactly one match)
 OW_DIR="$OVERWATCH_DIR" OW_PROJECT="$PROJECT_DIR" python3 -c "
 import os, sys, json
 sys.path.insert(0, os.environ['OW_DIR'])

@@ -49,15 +49,66 @@ def _skip_user_text(text: str) -> bool:
         return True
     if stripped.startswith("<environment_context>"):
         return True
+    if (
+        stripped.startswith("<subagent_notification>")
+        and stripped.endswith("</subagent_notification>")
+    ):
+        return True
     return any(stripped.startswith(pattern) for pattern in SKIP_USER_PATTERNS)
 
 
 def _summarize_tool_call(payload: dict) -> tuple[str, str]:
-    name = payload.get("name", "")
-    args = payload.get("arguments", "")
+    name = payload.get("name") or payload.get("tool_name") or "tool"
+    args = payload.get("arguments")
+    if args is None:
+        args = payload.get("input", "")
     if not isinstance(args, str):
         args = json.dumps(args, ensure_ascii=False)
     return name, _truncate(args, 1500)
+
+
+def _summarize_tool_output(payload: dict) -> str:
+    output = payload.get("output")
+    if output is None:
+        output = payload.get("content", "")
+    if not isinstance(output, str):
+        output = json.dumps(output, ensure_ascii=False)
+    return _truncate(output, 2000)
+
+
+def _anchor_developer_context(text: str) -> bool:
+    return any(
+        marker in text
+        for marker in (
+            "[Anchor]",
+            "[Anchor Todo Bridge]",
+            "[Anchor Todo Sync Required]",
+            "[Anchor Compatibility Block]",
+            "[Anchor Warning]",
+            "[Anchor Context Boundary]",
+            "[Anchor Capture Required]",
+        )
+    )
+
+
+def transcript_session_ids(transcript_path: str) -> set[str]:
+    session_ids: set[str] = set()
+    with open(transcript_path, "r", encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            if record.get("type") != "session_meta":
+                continue
+            payload = record.get("payload") or {}
+            if isinstance(payload, dict):
+                session_id = str(payload.get("id") or payload.get("session_id") or "").strip()
+                if session_id:
+                    session_ids.add(session_id)
+    return session_ids
 
 
 def _summarize_command_end(payload: dict) -> tuple[str, str]:
@@ -81,6 +132,7 @@ def parse(transcript_path: str, offset: int = 0) -> list[Turn]:
     """Parse a Codex Desktop JSONL transcript file."""
     turns: list[Turn] = []
     turn_index = offset
+    tool_names: dict[str, str] = {}
 
     with open(transcript_path, "r", encoding="utf-8") as f:
         for line_num, line in enumerate(f):
@@ -94,6 +146,8 @@ def parse(transcript_path: str, offset: int = 0) -> list[Turn]:
             try:
                 obj = json.loads(line)
             except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict):
                 continue
 
             outer_type = obj.get("type", "")
@@ -113,7 +167,7 @@ def parse(transcript_path: str, offset: int = 0) -> list[Turn]:
                     turns.append(Turn(
                         index=turn_index,
                         role="user",
-                        content=_truncate(text),
+                        content=text,
                         timestamp=timestamp,
                         line_number=line_num,
                     ))
@@ -122,19 +176,60 @@ def parse(transcript_path: str, offset: int = 0) -> list[Turn]:
                     turns.append(Turn(
                         index=turn_index,
                         role="assistant",
+                        content=text,
+                        timestamp=timestamp,
+                        line_number=line_num,
+                    ))
+                    turn_index += 1
+                elif role == "developer" and _anchor_developer_context(text):
+                    turns.append(Turn(
+                        index=turn_index,
+                        role="tool_use",
                         content=_truncate(text),
+                        tool_name="anchor_context",
                         timestamp=timestamp,
                         line_number=line_num,
                     ))
                     turn_index += 1
 
-            elif outer_type == "response_item" and payload_type == "function_call":
+            elif outer_type == "response_item" and payload_type in {
+                "function_call",
+                "custom_tool_call",
+            }:
                 name, summary = _summarize_tool_call(payload)
+                call_id = str(
+                    payload.get("call_id")
+                    or payload.get("id")
+                    or payload.get("tool_call_id")
+                    or ""
+                )
+                if call_id:
+                    tool_names[call_id] = name
                 turns.append(Turn(
                     index=turn_index,
                     role="tool_use",
                     content=summary,
                     tool_name=name,
+                    timestamp=timestamp,
+                    line_number=line_num,
+                ))
+                turn_index += 1
+
+            elif outer_type == "response_item" and payload_type in {
+                "function_call_output",
+                "custom_tool_call_output",
+            }:
+                call_id = str(
+                    payload.get("call_id")
+                    or payload.get("id")
+                    or payload.get("tool_call_id")
+                    or ""
+                )
+                turns.append(Turn(
+                    index=turn_index,
+                    role="tool_use",
+                    content=_summarize_tool_output(payload),
+                    tool_name=(tool_names.get(call_id, "tool") + "_output"),
                     timestamp=timestamp,
                     line_number=line_num,
                 ))

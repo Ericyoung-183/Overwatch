@@ -1,0 +1,7 @@
+[Anchor]
+Current: A
+Cursor token: cursor-1
+
+Assistant: A 里面又有三个问题：1. 方案 2. 风险 3. 验证。
+User: 这几个也逐一处理。
+Assistant: 那先直接分析方案。

@@ -22,8 +22,12 @@ ANCHOR_DRIFT_RULE = (
     "\"next/continue\", check whether there is an active Anchor agenda. Escalate if the Builder "
     "advances without reading the tracker, re-searches TODOs or nearby documents instead of using "
     "the frozen agenda, jumps back to the parent agenda before the child agenda is "
-    "closed/paused/deferred, invents a replacement list, or fails to update Anchor state after "
+    "closed/paused/deferred, advances a returned parent before its required `revise-conclusion` "
+    "synthesis, invents a replacement list, or fails to update Anchor state after "
     "changing item status."
+    " Treat deterministic findings as confirmed evidence, correlated findings as evidence-linked risks, "
+    "and heuristic entries only as candidates requiring transcript verification. Never present a heuristic "
+    "candidate as a confirmed failure without verifying the matching state or tool evidence."
 )
 ANCHOR_DRIFT_SECTION = ANCHOR_DRIFT_RULE + "\n" + ANCHOR_DRIFT_RUBRIC
 
@@ -181,15 +185,6 @@ def _env_bool_mode(value: str) -> str:
     return "auto"
 
 
-def _anchor_helper_exists() -> bool:
-    helper = os.environ.get("ANCHOR_HELPER", "").strip()
-    if helper and os.path.isfile(os.path.expanduser(helper)):
-        return True
-    home = os.path.expanduser(os.environ.get("HOME", "~"))
-    installed = os.path.join(home, ".codex", "skills", "anchor", "scripts", "anchor.py")
-    return os.path.isfile(installed)
-
-
 def _context_has_anchor_signal(context_text: str) -> bool:
     return any(
         marker in context_text
@@ -198,6 +193,7 @@ def _context_has_anchor_signal(context_text: str) -> bool:
             "Anchor project root:",
             "State source: project-local",
             "State source: global-fallback",
+            "[Anchor Capture Required]",
         ]
     )
 
@@ -208,7 +204,7 @@ def should_enable_anchor_drift(context_text: str) -> bool:
         return True
     if mode == "false":
         return False
-    return _context_has_anchor_signal(context_text) or _anchor_helper_exists()
+    return _context_has_anchor_signal(context_text)
 
 
 def system_prompt_template_for_context(context_text: str) -> str:

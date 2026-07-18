@@ -1,0 +1,3 @@
+User: 我们按这个清单逐一处理：A、B、C。
+Tool: source agenda: A | B | C
+Tool: captured agenda: A | C

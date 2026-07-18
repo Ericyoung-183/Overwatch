@@ -7,6 +7,7 @@ REVIEW_RESPONSE_PROTOCOL = """Review response protocol:
 - First: Present the full review text verbatim (no rewriting, omitting, or merging).
 - Then print a separator line.
 - Then respond point by point with judgment, action, or pushback.
+- Honor an explicit read-only, findings-only, frozen-candidate, or no-edit boundary from the user or task. In that mode, report findings without editing or persisting TODO/memory entries, and wait for authorization; this exception overrides the fix-now and persistence defaults below.
 - For each Issue and Recommendation, first decide whether it is immediately actionable.
 - Fix now is the default for actionable items: fix now in the current turn, then report the changed files plus verification evidence.
 - Only use TODO/backlog when the item is explicitly blocked, requires user decision, or is outside the current task boundary.
