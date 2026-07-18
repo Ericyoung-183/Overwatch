@@ -170,6 +170,44 @@ def test_config_exchange_preserves_original_after_post_commit_race() -> None:
     test("post-commit original config is recoverable", recovery_bytes == b"original\n", repr(recovery_bytes))
 
 
+def test_config_conflict_preserves_writes_from_both_exchange_sides() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "hooks.json"
+        target.write_bytes(b"external-before\n")
+        os.chmod(target, 0o600)
+        staged = config_transaction.stage_bytes(target, b"managed\n", 0o600)
+        real_rename = config_transaction._atomic_rename
+        exchanges = 0
+
+        def raced_rename(source: Path, destination: Path, *, exchange: bool) -> None:
+            nonlocal exchanges
+            real_rename(source, destination, exchange=exchange)
+            if exchange and destination == target and exchanges == 0:
+                exchanges += 1
+                target.write_bytes(b"external-after\n")
+
+        with mock.patch.object(config_transaction, "_atomic_rename", side_effect=raced_rename):
+            try:
+                config_transaction.commit_staged(
+                    target,
+                    staged,
+                    expected_original=b"expected-original\n",
+                    expected_mode=0o600,
+                )
+            except config_transaction.ConfigConflictError as exc:
+                error = str(exc)
+            else:
+                error = ""
+        staged.unlink(missing_ok=True)
+        recoveries = list(Path(tmp).glob(".hooks.json.overwatch-recovery.*.bak"))
+        recovered = recoveries[0].read_bytes() if len(recoveries) == 1 else b""
+        current = target.read_bytes()
+
+    test("exchange-side conflict is rejected", "recovery" in error, error)
+    test("pre-exchange external config remains active", current == b"external-before\n", repr(current))
+    test("post-exchange external config remains recoverable", recovered == b"external-after\n", repr(recovered))
+
+
 def test_config_rollback_preserves_external_edit_and_original() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "settings.json"
@@ -211,6 +249,37 @@ def test_config_rollback_preserves_external_edit_and_original() -> None:
     test("post-rollback managed bytes are not discarded", displaced_bytes == b"managed\n", repr(displaced_bytes))
 
 
+def test_config_rollback_preserves_original_when_current_is_already_external() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "settings.json"
+        target.write_bytes(b"external\n")
+        os.chmod(target, 0o600)
+        displaced = Path(tmp) / "displaced-original"
+        displaced.write_bytes(b"original\n")
+        os.chmod(displaced, 0o640)
+
+        try:
+            config_transaction.rollback_commit(
+                target,
+                displaced,
+                expected_current=b"managed\n",
+                expected_current_mode=0o600,
+            )
+        except config_transaction.ConfigConflictError as exc:
+            error = str(exc)
+        else:
+            error = ""
+        recoveries = list(Path(tmp).glob(".settings.json.overwatch-recovery.*.bak"))
+        recovery_bytes = recoveries[0].read_bytes() if len(recoveries) == 1 else b""
+        recovery_mode = recoveries[0].stat().st_mode & 0o777 if len(recoveries) == 1 else 0
+        current_bytes = target.read_bytes()
+        displaced_removed = not displaced.exists()
+
+    test("pre-rollback external edit is rejected with recovery evidence", "original preserved" in error, error)
+    test("pre-rollback external edit remains active", current_bytes == b"external\n", repr(current_bytes))
+    test("pre-rollback original moves to named recovery", len(recoveries) == 1 and recovery_bytes == b"original\n" and recovery_mode == 0o640 and displaced_removed, str(recoveries))
+
+
 def test_new_config_rollback_quarantines_before_validation() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "new-hooks.json"
@@ -242,6 +311,30 @@ def test_new_config_rollback_quarantines_before_validation() -> None:
 
     test("new-config rollback detects an atomic replacement race", "external edit preserved" in error, error)
     test("new-config rollback restores the external writer", current == b"external\n", repr(current))
+
+
+def test_new_config_rollback_retains_managed_quarantine() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "new-hooks.json"
+        target.write_bytes(b"managed\n")
+        os.chmod(target, 0o600)
+
+        config_transaction.rollback_commit(
+            target,
+            None,
+            expected_current=b"managed\n",
+            expected_current_mode=0o600,
+        )
+        quarantines = list(Path(tmp).glob(".new-hooks.json.overwatch-rollback.*.bak"))
+        quarantine_bytes = quarantines[0].read_bytes() if len(quarantines) == 1 else b""
+        quarantine_mode = (
+            quarantines[0].stat().st_mode & 0o777 if len(quarantines) == 1 else 0
+        )
+        active_removed = not target.exists()
+
+    test("successful new-config rollback removes the active path", active_removed, str(target))
+    test("successful new-config rollback retains one quarantine", len(quarantines) == 1, str(quarantines))
+    test("new-config quarantine preserves managed bytes and mode", quarantine_bytes == b"managed\n" and quarantine_mode == 0o600, f"{quarantine_bytes!r} {oct(quarantine_mode)}")
 
 
 def test_session_triggers_are_isolated() -> None:
@@ -773,8 +866,11 @@ if __name__ == "__main__":
     test_session_registry_rejects_empty_project_identity()
     test_engine_rejects_transcript_from_another_project_before_lock()
     test_config_exchange_preserves_original_after_post_commit_race()
+    test_config_conflict_preserves_writes_from_both_exchange_sides()
     test_config_rollback_preserves_external_edit_and_original()
+    test_config_rollback_preserves_original_when_current_is_already_external()
     test_new_config_rollback_quarantines_before_validation()
+    test_new_config_rollback_retains_managed_quarantine()
     test_session_triggers_are_isolated()
     test_auto_review_trigger_streams_only_hash_verified_bytes()
     test_find_review_refuses_ambiguous_project_session()

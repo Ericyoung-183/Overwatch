@@ -17,6 +17,7 @@ from anchor_capture import (
     _assistant_claims_current_item_complete,
     candidate_path,
     dismiss_candidate,
+    dismiss_transition,
     evaluate_capture_gate,
     evaluate_transition_gate,
     show_candidate,
@@ -491,6 +492,23 @@ def test_transcript_project_scope_and_explicit_opt_out_fail_closed() -> None:
     test("explicit opt-out creates no durable candidate", not opt_out_candidate_exists)
     test("meta description cannot be spliced into a child agenda", meta_only == "", meta_only)
     test("documented list opt-out wording is honored", "[Anchor Capture Opt-Out]" in documented_opt_out, documented_opt_out)
+    test("active opt-out requires guarded abandon", "abandon" in documented_opt_out and "Do not create or mutate" not in documented_opt_out, documented_opt_out)
+
+
+def test_missing_transcript_is_visible_for_root_split_turn_intent() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        blocked = evaluate_capture_gate(
+            state_dir=str(root / "state"),
+            session_id="missing-split-source",
+            adapter_name="codex",
+            transcript_path="",
+            user_prompt="好，我们现在逐一处理",
+            cwd=str(root),
+            anchor_active=False,
+        )
+
+    test("missing split-turn source fails visibly", "[Anchor Capture Scope Block]" in blocked, blocked)
 
 
 def test_exact_tracker_capture_clears_the_gate() -> None:
@@ -607,6 +625,9 @@ def test_common_and_short_label_completion_language_is_detected_conservatively()
         ("Hook 没问题了，进入下一项", "Hook"),
         ("发布结论已确定，下一步做复审", "发布"),
         ("当前项可以了，继续吧", "任意标题"),
+        ("当前项已经做完了，进入下一项", "任意标题"),
+        ("发布已经结束了，进入复审", "发布"),
+        ("发布验收通过，进入复审", "发布"),
     ]
     negatives = [
         ("A 尚未处理完，我们继续", "A"),
@@ -616,6 +637,9 @@ def test_common_and_short_label_completion_language_is_detected_conservatively()
         ("发布没有完全解决", "发布"),
         ("发布完成了吗？", "发布"),
         ("当前项可以了吗？", "发布"),
+        ("需要确认发布是否完成", "发布"),
+        ("当前项解决方案还需要验证", "发布"),
+        ("当前项完成度只有 50%", "发布"),
     ]
 
     for text, item in positives:
@@ -673,10 +697,49 @@ def test_transition_scope_failure_is_visible_for_an_active_agenda() -> None:
             anchor_active=True,
             helper_path=str(broken_helper),
         )
+        missing_helper = evaluate_transition_gate(
+            state_dir=str(root / "state"),
+            session_id="current-session",
+            adapter_name="codex",
+            transcript_path=str(transcript),
+            cwd=str(root),
+            anchor_active=True,
+            helper_path=str(root / "missing-anchor.py"),
+        )
 
     test("wrong-session transition transcript fails visibly", "[Anchor Transition Warning]" in wrong_scope, wrong_scope)
     test("missing transition transcript fails visibly", "[Anchor Transition Warning]" in missing, missing)
     test("unreadable Anchor status fails visibly", "[Anchor Transition Warning]" in unreadable_status, unreadable_status)
+    test("missing Anchor helper fails visibly", "[Anchor Transition Warning]" in missing_helper, missing_helper)
+
+
+def test_false_transition_marker_can_be_dismissed_with_a_reason() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        state = Path(tmp) / "state"
+        sid = "transition-dismiss"
+        marker = transition_path(str(state), sid)
+        marker.parent.mkdir(parents=True)
+        marker.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "session_id": sid,
+                    "project_root": str(Path(tmp)),
+                    "tracker_id": "tracker-1",
+                    "current_item_id": "item-1",
+                    "cursor_token": "cursor-1",
+                    "assistant_source_sha256": "a" * 64,
+                }
+            ),
+            encoding="utf-8",
+        )
+        result = dismiss_transition(str(state), sid, "The prior sentence was a question")
+        receipt = Path(result["receipt_path"])
+        marker_removed = not marker.exists()
+        receipt_text = receipt.read_text(encoding="utf-8") if receipt.is_file() else ""
+
+    test("transition dismissal removes the false marker", marker_removed, str(marker))
+    test("transition dismissal preserves a reason-bearing receipt", "question" in receipt_text, receipt_text)
 
 
 def test_prose_only_completion_creates_an_immediate_durable_recovery_gate() -> None:
@@ -826,9 +889,11 @@ if __name__ == "__main__":
     test_inline_lists_interrupt_vocabulary_and_root_continue_noise()
     test_transcript_and_persisted_candidate_scope_are_bound()
     test_transcript_project_scope_and_explicit_opt_out_fail_closed()
+    test_missing_transcript_is_visible_for_root_split_turn_intent()
     test_exact_tracker_capture_clears_the_gate()
     test_clearing_a_captured_candidate_does_not_drop_a_fresh_child_list()
     test_common_and_short_label_completion_language_is_detected_conservatively()
     test_transition_scope_failure_is_visible_for_an_active_agenda()
+    test_false_transition_marker_can_be_dismissed_with_a_reason()
     test_prose_only_completion_creates_an_immediate_durable_recovery_gate()
     print("Anchor capture gate tests passed")

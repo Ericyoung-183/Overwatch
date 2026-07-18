@@ -160,8 +160,10 @@ def commit_staged(
         )
         if not displaced_matches:
             _atomic_rename(staged_path, target, exchange=True)
+            recovery = _preserve_displaced(staged_path, target)
             raise ConfigConflictError(
-                f"refusing to replace concurrently modified config: {target}"
+                "refusing to replace concurrently modified config; "
+                f"post-exchange bytes preserved at recovery: {recovery}"
             )
         if (
             target.read_bytes() != staged_bytes
@@ -197,14 +199,21 @@ def rollback_commit(
 ) -> None:
     """Restore one committed file only if no external writer changed it."""
     target = reject_symlink(path)
-    if (
+    current_mismatch = (
         not target.is_file()
         or target.read_bytes() != expected_current
         or (
             expected_current_mode is not None
             and stat.S_IMODE(target.stat().st_mode) != expected_current_mode
         )
-    ):
+    )
+    if current_mismatch:
+        if displaced is not None:
+            recovery = _preserve_displaced(reject_symlink(displaced), target)
+            raise ConfigConflictError(
+                "external edit preserved during rollback; "
+                f"original preserved at {recovery}"
+            )
         raise ConfigConflictError(f"external edit preserved during rollback: {target}")
     if displaced is None:
         quarantine = _quarantine_path(target)

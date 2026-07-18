@@ -77,7 +77,10 @@ _INLINE_TRAILING_INTENT_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _ORAL_COMPLETION_RE = re.compile(
-    r"(?:(?:完成|处理完|解决|关闭)(?:了|完毕)?|"
+    r"(?:(?:处理完|做完)(?:了|完毕)?(?!成度|成率)|"
+    r"(?:(?:已经|已|彻底|基本)\s*(?:完成|解决|关闭)(?!度|率|方案|思路|路径|条件|标准)|"
+    r"(?:完成|解决|关闭)(?:了|完毕))|"
+    r"结束(?:了|完毕)|验收通过(?:了)?|"
     r"(?:已经|已|彻底|基本)收尾(?:了|完毕)?|收尾(?:完成|完毕|了)|"
     r"结论(?:已经|已)?(?:确定|确认|定了)|没问题了?|可以了|搞定(?:了)?)",
     re.IGNORECASE,
@@ -90,6 +93,10 @@ _NEGATIVE_COMPLETION_BEFORE_RE = re.compile(
 _NEGATIVE_COMPLETION_AFTER_RE = re.compile(r"^\s*(?:不了|失败)", re.IGNORECASE)
 _CURRENT_ITEM_RE = re.compile(
     r"(?:当前|这一|这|本)(?:个)?(?:项|议题|问题|item)", re.IGNORECASE
+)
+_INTERROGATIVE_COMPLETION_RE = re.compile(
+    r"(?:是否|能否|可否|有没有|是不是|算不算|要不要|需(?:要)?确认|待确认|尚待确认)",
+    re.IGNORECASE,
 )
 
 
@@ -186,7 +193,7 @@ def _assistant_claims_current_item_complete(
     clauses = re.finditer(r"([^\n。！？!?；;,，]+)([。！？!?；;,，]?)", assistant_text)
     for clause_match in clauses:
         clause = clause_match.group(1)
-        if clause_match.group(2) in {"?", "？"}:
+        if clause_match.group(2) in {"?", "？"} or _INTERROGATIVE_COMPLETION_RE.search(clause):
             continue
         positive_completion = any(
             not _NEGATIVE_COMPLETION_BEFORE_RE.search(clause[: match.start()])
@@ -210,16 +217,35 @@ def _assistant_claims_current_item_complete(
 
 
 def _render_transition_gate(marker: dict) -> str:
-    return "\n".join(
-        [
-            "[Anchor Transition Recovery Required]",
-            "The previous assistant turn claimed the current agenda item was complete, but the authoritative tracker still marks that same item as discussing.",
-            f"Tracker ID: {marker.get('tracker_id', '')}",
-            f"Current item ID: {marker.get('current_item_id', '')}",
-            f"Cursor token at detection: {marker.get('cursor_token', '')}",
-            "Before substantive work, read current Anchor status, satisfy any pending Whole Picture acknowledgement, then persist the real conclusion with guarded finish/next. Do not infer completion from prose.",
-        ]
-    )
+    lines = [
+        "[Anchor Transition Recovery Required]",
+        "The previous assistant turn claimed the current agenda item was complete, but the authoritative tracker still marks that same item as discussing.",
+        f"Tracker ID: {marker.get('tracker_id', '')}",
+        f"Current item ID: {marker.get('current_item_id', '')}",
+        f"Cursor token at detection: {marker.get('cursor_token', '')}",
+        "Before substantive work, read current Anchor status, satisfy any pending Whole Picture acknowledgement, then persist the real conclusion with guarded finish/next. Do not infer completion from prose.",
+    ]
+    state_dir = str(marker.get("state_dir") or "")
+    session_id = str(marker.get("session_id") or "")
+    if state_dir and session_id:
+        command = " ".join(
+            [
+                "python3",
+                shlex.quote(str(Path(__file__).resolve())),
+                "dismiss-transition",
+                "--state-dir",
+                shlex.quote(state_dir),
+                "--session-id",
+                shlex.quote(session_id),
+                "--reason",
+                "'<why the prior prose was not an item-completion claim>'",
+            ]
+        )
+        lines.append(
+            "If this detection is false, dismiss only this transition marker with a non-empty reason: "
+            + command
+        )
+    return "\n".join(lines)
 
 
 def _render_transition_warning(reason: str) -> str:
@@ -245,8 +271,10 @@ def evaluate_transition_gate(
     global_state_root: str = "",
 ) -> str:
     """Persistently recover prose-only agenda completion on the next prompt."""
-    if not anchor_active or not helper_path or not Path(helper_path).is_file():
+    if not anchor_active:
         return ""
+    if not helper_path or not Path(helper_path).is_file():
+        return _render_transition_warning("Anchor helper is unavailable")
     project_root = canonical_project_root(cwd)
     path = transition_path(state_dir, session_id)
     try:
@@ -309,6 +337,7 @@ def evaluate_transition_gate(
     marker = {
         "version": 1,
         "session_id": require_valid_session_id(session_id),
+        "state_dir": str(Path(state_dir).expanduser().resolve()),
         "project_root": project_root,
         "tracker_id": tracker_id,
         "current_item_id": current_item_id,
@@ -486,6 +515,14 @@ def detect_candidate(
         ):
             return None
     else:
+        if (
+            explicit_intent
+            and not anchor_active
+            and (not transcript_path or not Path(transcript_path).is_file())
+        ):
+            raise CaptureScopeError(
+                "sequential intent references a prior list, but the native transcript is unavailable"
+            )
         items, excerpt, source_ref, assistant_text = _latest_transcript_source(
             adapter_name,
             transcript_path,
@@ -695,12 +732,18 @@ def evaluate_capture_gate(
                 session_id,
                 "current user prompt explicitly declined Anchor tracking",
             )
-        return "\n".join(
-            [
+        lines = [
                 "[Anchor Capture Opt-Out]",
-                "The current user prompt explicitly declines Anchor tracking. Do not create or mutate an Anchor tracker for this request.",
             ]
-        )
+        if anchor_active:
+            lines.append(
+                "The user asked to stop tracking an active agenda. Inspect current status and use the guarded Anchor abandon command before substantive work; confirm first if unresolved items would be lost."
+            )
+        else:
+            lines.append(
+                "The current user prompt explicitly declines Anchor tracking. Do not create an Anchor tracker for this request."
+            )
+        return "\n".join(lines)
     captured_candidate = None
     if candidate and _candidate_already_captured(
         candidate,
@@ -782,6 +825,36 @@ def dismiss_candidate(state_dir: str, session_id: str, reason: str) -> dict:
     return {"status": "dismissed", "receipt_path": str(receipt)}
 
 
+def dismiss_transition(state_dir: str, session_id: str, reason: str) -> dict:
+    if not str(reason or "").strip():
+        raise ValueError("transition dismissal requires a non-empty reason")
+    path = transition_path(state_dir, session_id)
+    if not path.is_file():
+        raise FileNotFoundError(f"Anchor transition marker not found: {path}")
+    marker = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(marker, dict) or marker.get("session_id") != session_id:
+        raise ValueError("Anchor transition marker has invalid session binding")
+    source_hash = str(marker.get("assistant_source_sha256") or "")
+    receipt = path.with_name(
+        f"anchor_transition_dismissed_{session_id}_{source_hash[:12]}.json"
+    )
+    _atomic_json(
+        receipt,
+        {
+            "version": 1,
+            "session_id": session_id,
+            "tracker_id": marker.get("tracker_id"),
+            "current_item_id": marker.get("current_item_id"),
+            "assistant_source_sha256": source_hash,
+            "reason": str(reason).strip(),
+            "dismissed_at": time.time(),
+        },
+    )
+    path.unlink()
+    fsync_directory(path.parent)
+    return {"status": "dismissed", "receipt_path": str(receipt)}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -789,12 +862,18 @@ def main() -> int:
     dismiss.add_argument("--state-dir", required=True)
     dismiss.add_argument("--session-id", required=True)
     dismiss.add_argument("--reason", required=True)
+    dismiss_transition_parser = subparsers.add_parser("dismiss-transition")
+    dismiss_transition_parser.add_argument("--state-dir", required=True)
+    dismiss_transition_parser.add_argument("--session-id", required=True)
+    dismiss_transition_parser.add_argument("--reason", required=True)
     show = subparsers.add_parser("show")
     show.add_argument("--state-dir", required=True)
     show.add_argument("--session-id", required=True)
     args = parser.parse_args()
     if args.command == "dismiss":
         print(json.dumps(dismiss_candidate(args.state_dir, args.session_id, args.reason)))
+    elif args.command == "dismiss-transition":
+        print(json.dumps(dismiss_transition(args.state_dir, args.session_id, args.reason)))
     elif args.command == "show":
         print(json.dumps(show_candidate(args.state_dir, args.session_id), ensure_ascii=False))
     return 0

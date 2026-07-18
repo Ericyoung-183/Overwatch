@@ -40,7 +40,6 @@ python3 - <<'PY'
 import json
 import os
 import shlex
-import shutil
 from pathlib import Path
 
 overwatch_dir = os.path.realpath(os.environ["OW_DIR"])
@@ -148,7 +147,18 @@ else:
 staged = {}
 committed = []
 preserve_displaced = set()
+backup_snapshots = {}
+backup_staged = {}
+backup_committed = []
+preserve_backup_displaced = set()
 try:
+    for path, _, _, _, _ in updates:
+        backup = Path(str(path) + ".backup")
+        reject_symlink(backup)
+        backup_snapshots[backup] = (
+            backup.read_bytes() if backup.is_file() else None,
+            (backup.stat().st_mode & 0o777) if backup.is_file() else None,
+        )
     for path, original, updated, mode, _ in updates:
         staged[path] = stage_bytes(path, updated, mode)
     for path, original, updated, mode, _ in updates:
@@ -161,12 +171,38 @@ try:
         committed.append((path, updated, mode, displaced))
     for path, _, _, displaced in committed:
         backup = Path(str(path) + ".backup")
-        reject_symlink(backup)
         if displaced is None:
             raise RuntimeError(f"expected existing config disappeared: {path}")
-        shutil.copy2(displaced, backup)
+        backup_staged[backup] = stage_bytes(
+            backup,
+            displaced.read_bytes(),
+            displaced.stat().st_mode & 0o777,
+        )
+    for backup, temporary in backup_staged.items():
+        expected_bytes, expected_mode = backup_snapshots[backup]
+        content = temporary.read_bytes()
+        mode = temporary.stat().st_mode & 0o777
+        displaced = commit_staged(
+            backup,
+            temporary,
+            expected_original=expected_bytes,
+            expected_mode=expected_mode,
+        )
+        backup_committed.append((backup, content, mode, displaced))
 except BaseException:
     rollback_errors = []
+    for backup, content, committed_mode, displaced in reversed(backup_committed):
+        try:
+            rollback_commit(
+                backup,
+                displaced,
+                expected_current=content,
+                expected_current_mode=committed_mode,
+            )
+        except ConfigConflictError as exc:
+            rollback_errors.append(f"{backup}: {exc}")
+            if displaced is not None:
+                preserve_backup_displaced.add(displaced)
     for path, updated, committed_mode, displaced in reversed(committed):
         try:
             rollback_commit(
@@ -183,11 +219,18 @@ except BaseException:
         raise RuntimeError("uninstall failed and rollback was incomplete: " + "; ".join(rollback_errors))
     raise
 finally:
+    for _, _, _, displaced in backup_committed:
+        if displaced is not None and displaced not in preserve_backup_displaced:
+            displaced.unlink(missing_ok=True)
+    for temporary in backup_staged.values():
+        if temporary not in preserve_backup_displaced:
+            temporary.unlink(missing_ok=True)
     for _, _, _, displaced in committed:
         if displaced is not None and displaced not in preserve_displaced:
             displaced.unlink(missing_ok=True)
     for temporary in staged.values():
-        temporary.unlink(missing_ok=True)
+        if temporary not in preserve_displaced:
+            temporary.unlink(missing_ok=True)
 
 for _, _, _, _, message in updates:
     print(message)
