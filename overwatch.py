@@ -30,17 +30,26 @@ from config import (
     STATE_DIR,
 )
 from api_client import call_claude, call_claude_with_tools
-from adapters import get_adapter, get_transcript_session_ids
+from adapters import (
+    get_adapter,
+    get_transcript_project_cwds,
+    get_transcript_session_ids,
+)
 from context_manager import load_state, save_state, build_review_context
 from pending_review import (
     delivery_receipt_matches,
     pending_status,
-    review_artifact_session_id,
-    review_document_session_id,
+    review_artifact_identity,
+    review_document_identity,
     write_pending_marker,
 )
 from prompts import build_review_prompt
-from runtime_fs import ensure_private_directory, fsync_directory
+from runtime_fs import (
+    canonical_project_root,
+    ensure_private_directory,
+    fsync_directory,
+    project_identity_sha256,
+)
 
 
 _DIRECTORY_OPEN_FLAGS = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
@@ -99,8 +108,16 @@ def prepare_review_document(
 ) -> dict[str, object]:
     if not valid_session_id(session_id):
         raise ValueError("invalid Overwatch session ID")
+    project_root = canonical_project_root(project_cwd)
+    if not project_root:
+        raise ValueError("project root is required")
     timestamp = timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    header = f"<!-- Overwatch Review #{review_number} | {timestamp} | session: {session_id} | project: {project_cwd} -->\n<!-- META_END -->\n\n"
+    header = (
+        f"<!-- Overwatch Review #{review_number} | {timestamp} | "
+        f"session: {session_id} | project-sha256: "
+        f"{project_identity_sha256(project_root)} | project: {project_root} -->\n"
+        "<!-- META_END -->\n\n"
+    )
     document = header + review_text
     archive_path = os.path.abspath(
         os.path.join(REVIEWS_DIR, session_id, "history", f"review_{review_number:03d}.md")
@@ -235,10 +252,15 @@ def _acquire_lock(session_id: str):
         return None
 
 
-def _write_pending_marker(session_id: str, review_path: str):
+def _write_pending_marker(session_id: str, project_root: str, review_path: str):
     """Write pending auto-review for the UserPromptSubmit hook to deliver."""
     from config import STATE_DIR
-    return write_pending_marker(state_dir=STATE_DIR, session_id=session_id, review_path=review_path)
+    return write_pending_marker(
+        state_dir=STATE_DIR,
+        session_id=session_id,
+        project_root=project_root,
+        review_path=review_path,
+    )
 
 
 def _delivery_mode(intent: dict) -> str:
@@ -275,7 +297,9 @@ def _materialize_review_delivery_intent(session_id: str, intent: dict) -> str:
     review_path = os.path.abspath(raw_review_path) if raw_review_path else ""
     expected_hash = str(intent.get("review_sha256") or "")
     review_number = intent.get("review_number")
-    project_cwd = str(intent.get("project_cwd") or "")
+    project_cwd = canonical_project_root(
+        str(intent.get("project_root") or intent.get("project_cwd") or "")
+    )
     document = intent.get("review_document")
     if (
         not review_path
@@ -296,8 +320,11 @@ def _materialize_review_delivery_intent(session_id: str, intent: dict) -> str:
     if isinstance(document, str):
         if review_path != expected_path:
             raise ValueError("pending review delivery path is outside its session archive")
-        if review_document_session_id(document) != session_id:
+        document_session_id, document_project_sha256 = review_document_identity(document)
+        if document_session_id != session_id:
             raise ValueError("pending review document session mismatch")
+        if document_project_sha256 != project_identity_sha256(project_cwd):
+            raise ValueError("pending review document project mismatch")
         if hashlib.sha256(document.encode("utf-8")).hexdigest() != expected_hash:
             raise ValueError("pending review document hash mismatch")
         publish_review_document(
@@ -315,12 +342,15 @@ def _materialize_review_delivery_intent(session_id: str, intent: dict) -> str:
         actual_hash = hashlib.sha256(review_stream.read()).hexdigest()
     if actual_hash != expected_hash:
         raise ValueError("pending review artifact changed before delivery recovery")
-    if review_artifact_session_id(review_path) != session_id:
+    artifact_session_id, artifact_project_sha256 = review_artifact_identity(review_path)
+    if artifact_session_id != session_id:
         raise ValueError("pending review artifact session mismatch")
+    if artifact_project_sha256 != project_identity_sha256(project_cwd):
+        raise ValueError("pending review artifact project mismatch")
     return review_path
 
 
-def _recover_pending_review_delivery(session_id: str, state: dict):
+def _recover_pending_review_delivery(session_id: str, state: dict, project_root: str):
     intent = state.get("pending_review_delivery")
     if not isinstance(intent, dict):
         return False, None
@@ -353,6 +383,7 @@ def _recover_pending_review_delivery(session_id: str, state: dict):
         delivered = delivery_receipt_matches(
             state_dir=STATE_DIR,
             session_id=session_id,
+            project_root=project_root,
             review_path=review_path,
             review_sha256=actual_hash,
         )
@@ -361,7 +392,9 @@ def _recover_pending_review_delivery(session_id: str, state: dict):
                 STATE_DIR, f"auto_review_pending_{session_id}.json"
             )
             status = pending_status(
-                pending_path, expected_session_id=session_id
+                pending_path,
+                expected_session_id=session_id,
+                expected_project_root=project_root,
             )
             if status.get("exists"):
                 same_pending = (
@@ -378,7 +411,7 @@ def _recover_pending_review_delivery(session_id: str, state: dict):
                     )
                     return True, None
             else:
-                _write_pending_marker(session_id, review_path)
+                _write_pending_marker(session_id, project_root, review_path)
                 log(
                     "pending_marker_recovered",
                     session_id=session_id,
@@ -402,6 +435,7 @@ def _recover_pending_review_delivery(session_id: str, state: dict):
 
     final_state = dict(success_state)
     final_state.pop("pending_review_delivery", None)
+    final_state["project_root"] = project_root
     save_state(session_id, final_state)
     log("pending_delivery_recovered", session_id=session_id, path=review_path)
     return True, review_path
@@ -712,8 +746,8 @@ def run(
     if not valid_session_id(session_id):
         log("run_rejected_session_id", session_id=session_id)
         return None
-    effective_cwd = project_cwd or os.getcwd()
-    if not project_is_allowed(effective_cwd):
+    effective_cwd = canonical_project_root(project_cwd or os.getcwd())
+    if not effective_cwd or not project_is_allowed(effective_cwd):
         log(
             "run_rejected_project_allowlist",
             session_id=session_id,
@@ -722,6 +756,11 @@ def run(
         return None
     try:
         native_session_ids = get_transcript_session_ids(ADAPTER, transcript_path)
+        transcript_roots = {
+            canonical_project_root(cwd)
+            for cwd in get_transcript_project_cwds(ADAPTER, transcript_path)
+            if cwd
+        }
     except OSError as exc:
         log(
             "run_rejected_transcript_identity",
@@ -740,6 +779,19 @@ def run(
             reason=identity_error,
         )
         return None
+    if transcript_roots != {effective_cwd}:
+        log(
+            "run_rejected_transcript_project",
+            session_id=session_id,
+            project_cwd=effective_cwd,
+            transcript_project_roots=sorted(transcript_roots),
+            reason=(
+                "missing_transcript_project"
+                if not transcript_roots
+                else "transcript_project_mismatch"
+            ),
+        )
+        return None
     lock = _acquire_lock(session_id)
     if lock is None:
         log("run_skipped_lock", session_id=session_id, reason="another_instance_running")
@@ -750,7 +802,7 @@ def run(
             session_id,
             transcript_path,
             force,
-            project_cwd,
+            effective_cwd,
             result_file,
         )
     finally:
@@ -766,12 +818,25 @@ def _run_inner(
     result_file: str = "",
 ):
     """Core review logic."""
+    project_cwd = canonical_project_root(project_cwd)
     state = load_state(session_id)
+    state_project_root = canonical_project_root(
+        str(state.get("project_root") or "")
+    )
+    if state_project_root and state_project_root != project_cwd:
+        log(
+            "run_rejected_state_project",
+            session_id=session_id,
+            project_cwd=project_cwd,
+            state_project_root=state_project_root,
+        )
+        return None
+    state = {**state, "project_root": project_cwd}
 
     # Delivery recovery is a local durability operation and must not depend on
     # credentials or backend availability after the review already succeeded.
     recovered, recovered_review_path = _recover_pending_review_delivery(
-        session_id, state
+        session_id, state, project_cwd
     )
     if recovered:
         return recovered_review_path
@@ -812,12 +877,15 @@ def _run_inner(
     user_context = _read_user_context(project_cwd)
 
     context_text, updated_state = build_review_context(turns, state, "", git_context, user_context)
+    updated_state["project_root"] = project_cwd
     review_number = updated_state["review_count"]
     history_dir = os.path.join(REVIEWS_DIR, session_id, "history")
     while os.path.exists(os.path.join(history_dir, f"review_{review_number:03d}.md")):
         review_number += 1
     updated_state["review_count"] = review_number
-    attempt_state = _mark_attempt_started({**state, "review_count": review_number})
+    attempt_state = _mark_attempt_started(
+        {**state, "review_count": review_number, "project_root": project_cwd}
+    )
     save_state(session_id, attempt_state)
 
     # Determine if agentic review (with tools) is supported
@@ -887,6 +955,7 @@ def _run_inner(
             "review_number": review_number,
             "session_id": session_id,
             "project_cwd": project_cwd,
+            "project_root": project_cwd,
             "delivery_mode": delivery_mode,
             "manual_result_path": os.path.abspath(result_file) if result_file else "",
             "success_state": success_state,
@@ -902,7 +971,7 @@ def _run_inner(
     log("review_written", session_id=session_id, review=review_number, latency_ms=latency_ms, path=review_path)
 
     if delivery_mode == "auto":
-        _write_pending_marker(session_id, review_path)
+        _write_pending_marker(session_id, project_cwd, review_path)
         log("pending_marker_written", session_id=session_id, review=review_number)
 
     if delivery_mode == "manual":
@@ -919,13 +988,20 @@ def write_manual_result(result_file: str, session_id: str, review_path: str) -> 
     ensure_private_directory(parent)
     with open(review_path, "rb") as review_stream:
         review_sha256 = hashlib.sha256(review_stream.read()).hexdigest()
-    if review_artifact_session_id(review_path) != session_id:
-        raise ValueError("manual review artifact session mismatch")
-
     state = load_state(session_id)
     intent = state.get("pending_review_delivery")
     success_state = None
     if isinstance(intent, dict):
+        project_root = canonical_project_root(
+            str(intent.get("project_root") or intent.get("project_cwd") or "")
+        )
+        artifact_session_id, artifact_project_sha256 = review_artifact_identity(
+            review_path
+        )
+        if artifact_session_id != session_id:
+            raise ValueError("manual review artifact session mismatch")
+        if artifact_project_sha256 != project_identity_sha256(project_root):
+            raise ValueError("manual review artifact project mismatch")
         if (
             _delivery_mode(intent) != "manual"
             or os.path.abspath(str(intent.get("manual_result_path") or "")) != path
@@ -935,6 +1011,9 @@ def write_manual_result(result_file: str, session_id: str, review_path: str) -> 
         ):
             raise ValueError("manual result does not match pending review delivery intent")
         success_state = dict(intent["success_state"])
+        success_state["project_root"] = project_root
+    else:
+        raise ValueError("manual result has no pending review delivery intent")
     payload = {
         "status": "success",
         "session_id": session_id,

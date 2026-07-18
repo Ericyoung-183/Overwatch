@@ -20,6 +20,10 @@ STATE_DIR = TEST_ROOT / "state"
 LOG_FILE = TEST_ROOT / "overwatch.log"
 atexit.register(lambda: shutil.rmtree(TEST_ROOT, ignore_errors=True))
 
+import sys
+sys.path.insert(0, str(ROOT))
+from runtime_fs import canonical_project_root, project_identity_sha256  # noqa: E402
+
 
 def test(name: str, condition: bool, detail: str = "") -> None:
     if condition:
@@ -29,13 +33,18 @@ def test(name: str, condition: bool, detail: str = "") -> None:
     raise AssertionError(name)
 
 
-def write_fresh_pending(pending_file: Path, review_file: Path, session_id: str) -> None:
+def write_fresh_pending(
+    pending_file: Path, review_file: Path, session_id: str, project_root: str
+) -> None:
+    project_root = canonical_project_root(project_root)
     pending_file.write_text(
         json.dumps(
             {
                 "review_path": str(review_file.resolve()),
                 "review_sha256": hashlib.sha256(review_file.read_bytes()).hexdigest(),
                 "session_id": session_id,
+                "project_root": project_root,
+                "project_sha256": project_identity_sha256(project_root),
                 "created_at": 4_102_444_800,
                 "ttl_hours": 72,
             }
@@ -44,9 +53,13 @@ def write_fresh_pending(pending_file: Path, review_file: Path, session_id: str) 
     )
 
 
-def write_review_artifact(review_file: Path, session_id: str, body: str) -> None:
+def write_review_artifact(
+    review_file: Path, session_id: str, body: str, project_root: str
+) -> None:
+    project_root = canonical_project_root(project_root)
     review_file.write_text(
-        f"<!-- Overwatch Review #1 | 2099-01-01 00:00 | session: {session_id} | project: /tmp/codex-project -->\n"
+        f"<!-- Overwatch Review #1 | 2099-01-01 00:00 | session: {session_id} | "
+        f"project-sha256: {project_identity_sha256(project_root)} | project: {project_root} -->\n"
         "<!-- META_END -->\n\n"
         + body,
         encoding="utf-8",
@@ -211,6 +224,8 @@ def test_stop_hook_discards_expired_pending_instead_of_skipping() -> None:
                 {
                     "review_path": str(review_file),
                     "session_id": sid,
+                    "project_root": canonical_project_root("/tmp/codex-observability-project"),
+                    "project_sha256": project_identity_sha256("/tmp/codex-observability-project"),
                     "created_at": 1,
                     "ttl_hours": 72,
                 }
@@ -249,6 +264,8 @@ def test_stop_hook_preserves_and_labels_broken_pending_evidence() -> None:
                     {
                         "review_path": "/tmp/definitely-missing-overwatch-review.md",
                         "session_id": sid,
+                        "project_root": canonical_project_root("/tmp/codex-observability-project"),
+                        "project_sha256": project_identity_sha256("/tmp/codex-observability-project"),
                         "created_at": 4_102_444_800,
                         "ttl_hours": 72,
                     }
@@ -302,6 +319,8 @@ def test_stop_hook_uses_smart_trigger_for_codex_review_request() -> None:
             "codex_stop.sh",
             {
                 "session_id": sid,
+                "project_root": canonical_project_root("/tmp/codex-observability-project"),
+                "project_sha256": project_identity_sha256("/tmp/codex-observability-project"),
                 "transcript_path": str(transcript),
                 "cwd": "/tmp/codex-observability-project",
             },
@@ -329,6 +348,8 @@ def test_stop_hook_waits_without_codex_smart_signal() -> None:
             "codex_stop.sh",
             {
                 "session_id": sid,
+                "project_root": canonical_project_root("/tmp/codex-observability-project"),
+                "project_sha256": project_identity_sha256("/tmp/codex-observability-project"),
                 "transcript_path": str(transcript),
                 "cwd": "/tmp/codex-observability-project",
             },
@@ -410,9 +431,10 @@ def test_prompt_hook_delivers_fresh_pending_review() -> None:
     trigger_file = STATE_DIR / "triggers" / f"{sid}.json"
     original_trigger = trigger_file.read_text(encoding="utf-8") if trigger_file.exists() else ""
     pending_file.unlink(missing_ok=True)
-    write_review_artifact(review_file, sid, "FRESH AUTO REVIEW BODY")
+    project_root = "/tmp/codex-observability-project"
+    write_review_artifact(review_file, sid, "FRESH AUTO REVIEW BODY", project_root)
     expected_review_hash = hashlib.sha256(review_file.read_bytes()).hexdigest()
-    write_fresh_pending(pending_file, review_file, sid)
+    write_fresh_pending(pending_file, review_file, sid, project_root)
     receipt_file = STATE_DIR / f"auto_review_delivered_{sid}.json"
 
     try:
@@ -470,8 +492,9 @@ def test_prompt_hook_delivers_long_pending_review_without_truncation() -> None:
     original_trigger = trigger_file.read_text(encoding="utf-8") if trigger_file.exists() else ""
     pending_file.unlink(missing_ok=True)
     review_body = "A" * 9000 + "\nTAIL FINDING MUST REMAIN"
-    write_review_artifact(review_file, sid, review_body)
-    write_fresh_pending(pending_file, review_file, sid)
+    project_root = "/tmp/codex-observability-project"
+    write_review_artifact(review_file, sid, review_body, project_root)
+    write_fresh_pending(pending_file, review_file, sid, project_root)
 
     try:
         response = run_hook(
@@ -509,6 +532,8 @@ def test_prompt_hook_preserves_pending_marker_when_review_file_is_missing() -> N
             {
                 "review_path": "/tmp/anchor-overwatch-review-does-not-exist.md",
                 "session_id": sid,
+                "project_root": canonical_project_root("/tmp/codex-observability-project"),
+                "project_sha256": project_identity_sha256("/tmp/codex-observability-project"),
                 "created_at": 4_102_444_800,
                 "ttl_hours": 72,
             }
@@ -551,6 +576,8 @@ def test_prompt_hook_discards_expired_pending_before_manual_trigger() -> None:
             {
                 "review_path": str(review_file),
                 "session_id": sid,
+                "project_root": canonical_project_root("/tmp/codex-observability-project"),
+                "project_sha256": project_identity_sha256("/tmp/codex-observability-project"),
                 "created_at": 1,
                 "ttl_hours": 72,
             }
@@ -718,8 +745,8 @@ def test_prompt_hook_injects_anchor_context_when_helper_is_configured() -> None:
 
         pending_file = STATE_DIR / f"auto_review_pending_{sid}.json"
         review_file = Path(tmp) / "anchor-auto-review.md"
-        write_review_artifact(review_file, sid, "ANCHOR AUTO REVIEW BODY")
-        write_fresh_pending(pending_file, review_file, sid)
+        write_review_artifact(review_file, sid, "ANCHOR AUTO REVIEW BODY", str(project))
+        write_fresh_pending(pending_file, review_file, sid, str(project))
         auto_review = run_hook(
             "codex_prompt.sh",
             {
@@ -843,7 +870,11 @@ def test_prompt_hook_injects_anchor_context_when_helper_is_configured() -> None:
                 "ANCHOR_GLOBAL_STATE_ROOT": str(global_state),
             },
         )
-        test("prompt hook ignores unrelated Anchor state", "hookSpecificOutput" not in unrelated, str(unrelated))
+        unrelated_context = str(
+            unrelated.get("hookSpecificOutput", {}).get("additionalContext", "")
+        )
+        test("prompt hook blocks a session reused in another project", "[Overwatch Project Scope Block]" in unrelated_context, unrelated_context)
+        test("project scope block does not leak Anchor agenda", "Current path:" not in unrelated_context, unrelated_context)
 
 
 def test_prompt_hook_injects_todo_bridge_reminder_when_prompt_mentions_todo() -> None:
@@ -1275,7 +1306,7 @@ def test_manual_trigger_shell_quotes_dynamic_paths() -> None:
     tokens = shlex.split(review_line)
     test("manual trigger keeps session id in one shell token", sid in tokens, review_line)
     test("manual trigger keeps transcript in one shell token", transcript in tokens, review_line)
-    test("manual trigger keeps cwd in one shell token", cwd in tokens, review_line)
+    test("manual trigger keeps canonical cwd in one shell token", canonical_project_root(cwd) in tokens, review_line)
     test("manual trigger requires an exact result file", "--result-file" in tokens, review_line)
     test("manual trigger contains no separator token", ";" not in tokens, review_line)
 
@@ -1331,6 +1362,34 @@ def test_prompt_hook_injects_durable_two_signal_capture_gate() -> None:
     test("Codex capture gate survives later prompts", "[Anchor Capture Required]" in second_context, second_context)
 
 
+def test_prompt_hook_surfaces_capture_evaluator_failure() -> None:
+    sid = "codex-capture-evaluator-failure"
+    marker = STATE_DIR / f"anchor_capture_{sid}.json"
+    helper = TEST_ROOT / "capture-failure-anchor.py"
+    helper.write_text("raise SystemExit(0)\n", encoding="utf-8")
+    marker.mkdir(parents=True, exist_ok=True)
+    try:
+        response = run_hook(
+            "codex_prompt.sh",
+            {
+                "session_id": sid,
+                "transcript_path": "",
+                "cwd": "/tmp/codex-capture-evaluator-failure-project",
+                "user_prompt": "我们逐一处理：\n1. First issue\n2. Second issue",
+            },
+            env={"ANCHOR_HELPER": str(helper)},
+        )
+        context = str(
+            response.get("hookSpecificOutput", {}).get("additionalContext", "")
+        )
+        logged = LOG_FILE.read_text(encoding="utf-8") if LOG_FILE.is_file() else ""
+    finally:
+        marker.rmdir()
+
+    test("Codex hook surfaces capture evaluator failure", "[Anchor Capture Warning]" in context, context)
+    test("Codex hook logs capture evaluator failure", "Anchor capture evaluator failed" in logged, logged)
+
+
 def test_manual_trigger_respects_review_model_override() -> None:
     text = (ROOT / "hooks" / "codex_prompt.sh").read_text(encoding="utf-8")
     manual_start = text.index("from response_protocol import build_manual_trigger_context")
@@ -1364,5 +1423,6 @@ if __name__ == "__main__":
     test_codex_pending_marker_requires_builder_acknowledgement()
     test_manual_trigger_shell_quotes_dynamic_paths()
     test_prompt_hook_injects_durable_two_signal_capture_gate()
+    test_prompt_hook_surfaces_capture_evaluator_failure()
     test_manual_trigger_respects_review_model_override()
     print("codex hook observability tests passed")

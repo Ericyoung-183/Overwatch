@@ -16,12 +16,18 @@ from pathlib import Path
 from typing import Mapping
 
 from config import require_valid_session_id
-from runtime_fs import ensure_private_directory, fsync_directory
+from runtime_fs import (
+    canonical_project_root,
+    ensure_private_directory,
+    fsync_directory,
+    project_identity_sha256,
+)
 
 
 DEFAULT_PENDING_TTL_HOURS = 72.0
 TTL_ENV_KEY = "OVERWATCH_PENDING_TTL_HOURS"
 REVIEW_SESSION_RE = re.compile(r"\| session: ([^| ]+) \|")
+REVIEW_PROJECT_SHA256_RE = re.compile(r"\| project-sha256: ([0-9a-f]{64}) \|")
 
 
 @contextlib.contextmanager
@@ -72,15 +78,20 @@ def configured_ttl_hours(
     return DEFAULT_PENDING_TTL_HOURS
 
 
-def review_document_session_id(document: str) -> str:
-    """Return the session bound into an Overwatch review document."""
+def review_document_identity(document: str) -> tuple[str, str]:
+    """Return the session and project hash bound into a review document."""
     lines = document.splitlines()
     first_line = lines[0] if lines else ""
     second_line = lines[1] if len(lines) > 1 else ""
-    match = REVIEW_SESSION_RE.search(first_line.rstrip("\r\n"))
-    if not match or second_line != "<!-- META_END -->":
-        raise ValueError("review artifact has no valid Overwatch session metadata")
-    return require_valid_session_id(match.group(1))
+    session_match = REVIEW_SESSION_RE.search(first_line.rstrip("\r\n"))
+    project_match = REVIEW_PROJECT_SHA256_RE.search(first_line.rstrip("\r\n"))
+    if not session_match or not project_match or second_line != "<!-- META_END -->":
+        raise ValueError("review artifact has no valid Overwatch identity metadata")
+    return require_valid_session_id(session_match.group(1)), project_match.group(1)
+
+
+def review_document_session_id(document: str) -> str:
+    return review_document_identity(document)[0]
 
 
 def review_artifact_session_id(review_path: str | Path) -> str:
@@ -91,29 +102,45 @@ def review_artifact_session_id(review_path: str | Path) -> str:
     return review_document_session_id(document_head)
 
 
+def review_artifact_identity(review_path: str | Path) -> tuple[str, str]:
+    path = Path(review_path).expanduser().resolve()
+    with path.open("r", encoding="utf-8") as stream:
+        document_head = stream.readline(4096) + stream.readline(4096)
+    return review_document_identity(document_head)
+
+
 def write_pending_marker(
     *,
     state_dir: str,
     session_id: str,
+    project_root: str,
     review_path: str,
     now: float | None = None,
     ttl_hours: float | None = None,
 ) -> str:
     """Write a pending auto-review marker and return its path."""
     session_id = require_valid_session_id(session_id)
+    project_root = canonical_project_root(project_root)
+    if not project_root:
+        raise ValueError("project root is required")
     timestamp = time.time() if now is None else now
     active_ttl = configured_ttl_hours() if ttl_hours is None else ttl_hours
     review = Path(review_path).expanduser().resolve()
-    artifact_session_id = review_artifact_session_id(review)
+    artifact_session_id, artifact_project_sha256 = review_artifact_identity(review)
     if artifact_session_id != session_id:
         raise ValueError(
             f"review artifact session {artifact_session_id!r} does not match marker session {session_id!r}"
         )
+    expected_project_sha256 = project_identity_sha256(project_root)
+    if artifact_project_sha256 != expected_project_sha256:
+        raise ValueError("review artifact project does not match marker project")
     review_sha256 = hashlib.sha256(review.read_bytes()).hexdigest()
     payload = {
         "review_path": str(review),
         "review_sha256": review_sha256,
         "session_id": session_id,
+        "project_root": project_root,
+        "project_sha256": expected_project_sha256,
         "created_at": timestamp,
         "created_at_iso": dt.datetime.fromtimestamp(timestamp, dt.timezone.utc).isoformat(),
         "ttl_hours": 0 if active_ttl is None else active_ttl,
@@ -150,6 +177,7 @@ def pending_status(
     pending_path: str,
     *,
     expected_session_id: str | None = None,
+    expected_project_root: str | None = None,
     env: Mapping[str, str] | None = None,
     now: float | None = None,
 ) -> dict[str, object]:
@@ -191,6 +219,39 @@ def pending_status(
             "path": str(path),
             "pending": pending,
         }
+
+    marker_project_root = canonical_project_root(
+        str(pending.get("project_root") or "")
+    )
+    marker_project_sha256 = str(pending.get("project_sha256") or "").strip()
+    if (
+        not marker_project_root
+        or marker_project_sha256 != project_identity_sha256(marker_project_root)
+    ):
+        return {
+            "exists": True,
+            "deliverable": False,
+            "expired": False,
+            "reason": "invalid_marker",
+            "error": "pending marker has no valid project identity",
+            "path": str(path),
+            "pending": pending,
+        }
+    if expected_project_root is not None:
+        expected_root = canonical_project_root(expected_project_root)
+        if marker_project_root != expected_root:
+            return {
+                "exists": True,
+                "deliverable": False,
+                "expired": False,
+                "reason": "project_mismatch",
+                "error": (
+                    f"pending marker project {marker_project_root!r} does not match "
+                    f"expected project {expected_root!r}"
+                ),
+                "path": str(path),
+                "pending": pending,
+            }
 
     created_at = _coerce_float(pending.get("created_at"))
     created_at_source = "created_at"
@@ -266,7 +327,7 @@ def pending_status(
             "review_sha256": actual_review_sha256,
         }
     try:
-        artifact_session_id = review_artifact_session_id(review_path)
+        artifact_session_id, artifact_project_sha256 = review_artifact_identity(review_path)
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         return {
             **common,
@@ -290,6 +351,16 @@ def pending_status(
             "review_path": str(review_path),
             "review_sha256": actual_review_sha256,
         }
+    if artifact_project_sha256 != marker_project_sha256:
+        return {
+            **common,
+            "deliverable": False,
+            "expired": False,
+            "reason": "artifact_project_mismatch",
+            "error": "review artifact project does not match marker project",
+            "review_path": str(review_path),
+            "review_sha256": actual_review_sha256,
+        }
 
     return {
         **common,
@@ -305,6 +376,7 @@ def read_deliverable_review(
     pending_path: str,
     *,
     expected_session_id: str,
+    expected_project_root: str,
     env: Mapping[str, str] | None = None,
     now: float | None = None,
 ) -> tuple[dict[str, object], str]:
@@ -312,6 +384,7 @@ def read_deliverable_review(
     status = pending_status(
         pending_path,
         expected_session_id=expected_session_id,
+        expected_project_root=expected_project_root,
         env=env,
         now=now,
     )
@@ -340,14 +413,21 @@ def acknowledge_pending_delivery(
     state_dir: str,
     pending_path: str,
     session_id: str,
+    project_root: str,
     expected_marker_sha256: str,
     now: float | None = None,
 ) -> dict[str, object]:
     """Record exact delivery and remove only the marker that was displayed."""
     session_id = require_valid_session_id(session_id)
+    project_root = canonical_project_root(project_root)
     path = Path(pending_path)
     with pending_lock(path):
-        status = pending_status(pending_path, expected_session_id=session_id, now=now)
+        status = pending_status(
+            pending_path,
+            expected_session_id=session_id,
+            expected_project_root=project_root,
+            now=now,
+        )
         if not status.get("deliverable"):
             return {**status, "acknowledged": False}
         if status.get("marker_sha256") != expected_marker_sha256:
@@ -368,6 +448,8 @@ def acknowledge_pending_delivery(
         timestamp = time.time() if now is None else now
         receipt = {
             "session_id": session_id,
+            "project_root": project_root,
+            "project_sha256": project_identity_sha256(project_root),
             "review_path": status["review_path"],
             "review_sha256": status["review_sha256"],
             "marker_sha256": status["marker_sha256"],
@@ -400,6 +482,7 @@ def delivery_receipt_matches(
     *,
     state_dir: str,
     session_id: str,
+    project_root: str,
     review_path: str,
     review_sha256: str,
 ) -> bool:
@@ -412,6 +495,8 @@ def delivery_receipt_matches(
         return False
     return (
         receipt.get("session_id") == session_id
+        and receipt.get("project_root") == canonical_project_root(project_root)
+        and receipt.get("project_sha256") == project_identity_sha256(project_root)
         and receipt.get("review_path") == str(Path(review_path).expanduser().resolve())
         and receipt.get("review_sha256") == review_sha256
     )
@@ -421,6 +506,7 @@ def cleanup_expired_pending(
     pending_path: str,
     *,
     expected_session_id: str | None = None,
+    expected_project_root: str | None = None,
     env: Mapping[str, str] | None = None,
     now: float | None = None,
 ) -> dict[str, object]:
@@ -430,6 +516,7 @@ def cleanup_expired_pending(
         status = pending_status(
             pending_path,
             expected_session_id=expected_session_id,
+            expected_project_root=expected_project_root,
             env=env,
             now=now,
         )
@@ -475,6 +562,7 @@ def main() -> int:
     acknowledge.add_argument("--state-dir", required=True)
     acknowledge.add_argument("--pending-path", required=True)
     acknowledge.add_argument("--session-id", required=True)
+    acknowledge.add_argument("--project-root", required=True)
     acknowledge.add_argument("--expected-marker-sha256", required=True)
     args = parser.parse_args()
     if args.command == "acknowledge":
@@ -482,6 +570,7 @@ def main() -> int:
             state_dir=args.state_dir,
             pending_path=args.pending_path,
             session_id=args.session_id,
+            project_root=args.project_root,
             expected_marker_sha256=args.expected_marker_sha256,
         )
         print(json.dumps(result, ensure_ascii=False))

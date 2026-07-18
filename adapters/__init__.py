@@ -46,6 +46,16 @@ def get_transcript_session_ids(name: str, transcript_path: str) -> set[str]:
     raise ValueError(f"Unknown adapter: {name}. Available: claude_code, codex")
 
 
+def get_transcript_project_cwds(name: str, transcript_path: str) -> set[str]:
+    if name == "claude_code":
+        from adapters.claude_code import transcript_project_cwds
+        return transcript_project_cwds(transcript_path)
+    if name in ("codex", "codex_desktop"):
+        from adapters.codex import transcript_project_cwds
+        return transcript_project_cwds(transcript_path)
+    raise ValueError(f"Unknown adapter: {name}. Available: claude_code, codex")
+
+
 def format_turn(turn: Turn) -> str:
     """Format a Turn into readable text for context building."""
     if turn.role == "user":

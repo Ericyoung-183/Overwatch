@@ -52,7 +52,7 @@ fi
 echo -e "Found Claude Code config: ${GREEN}$SETTINGS_FILE${NC}"
 
 # Step 2: Verify Overwatch files exist
-for f in overwatch.py config.py api_client.py context_manager.py pending_review.py anchor_capture.py runtime_fs.py prompts.py anchor_drift.py trigger_policy.py response_protocol.py session_registry.py trigger_state.py tools.py claude_md_snippet.md adapters/__init__.py adapters/claude_code.py hooks/claude_code_stop.sh hooks/claude_code_prompt.sh hooks/find_review.sh hooks/find_session.sh hooks/run_manual_review.sh; do
+for f in overwatch.py config.py api_client.py context_manager.py pending_review.py anchor_capture.py runtime_fs.py config_transaction.py prompts.py anchor_drift.py trigger_policy.py response_protocol.py session_registry.py trigger_state.py tools.py claude_md_snippet.md adapters/__init__.py adapters/claude_code.py hooks/claude_code_stop.sh hooks/claude_code_prompt.sh hooks/find_review.sh hooks/find_session.sh hooks/run_manual_review.sh; do
     if [ ! -f "$OVERWATCH_DIR/$f" ]; then
         echo -e "${RED}Error: Missing $f in $OVERWATCH_DIR${NC}"
         exit 1
@@ -76,7 +76,6 @@ import os
 import shlex
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 
 settings_file = Path(sys.argv[1])
@@ -84,7 +83,17 @@ overwatch_dir = Path(sys.argv[2])
 claude_md = Path(sys.argv[3])
 
 sys.path.insert(0, str(overwatch_dir))
+from config_transaction import (
+    ConfigConflictError,
+    commit_staged,
+    reject_symlink,
+    rollback_commit,
+    stage_bytes,
+)
 from response_protocol import REVIEW_RESPONSE_PROTOCOL
+
+reject_symlink(settings_file)
+reject_symlink(claude_md)
 
 snippet_path = overwatch_dir / "claude_md_snippet.md"
 snippet = snippet_path.read_text(encoding="utf-8")
@@ -169,7 +178,7 @@ def add_canonical_hook(event, command, timeout, marker):
         target = {'matcher': '', 'hooks': []}
         matchers.append(target)
     target.setdefault('hooks', []).append(entry)
-    print(f"{event} hook: {'already registered' if already else 'updated'}")
+    return f"{event} hook: {'already registered' if already else 'updated'}"
 
 
 messages = [
@@ -179,77 +188,77 @@ messages = [
 updated_settings = json.dumps(settings, indent=2, ensure_ascii=False) + "\n"
 
 
-def stage(path, text, mode):
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        os.fchmod(fd, mode)
-        stream = os.fdopen(fd, "w", encoding="utf-8")
-        fd = -1
-        with stream:
-            stream.write(text)
-            stream.flush()
-            os.fsync(stream.fileno())
-    except BaseException:
-        if fd >= 0:
-            os.close(fd)
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
-    return Path(tmp)
-
-
 settings_mode = settings_file.stat().st_mode & 0o777
 claude_mode = (claude_md.stat().st_mode & 0o777) if claude_existed else 0o600
-settings_tmp = stage(settings_file, updated_settings, settings_mode)
-claude_tmp = stage(claude_md, updated_claude, claude_mode)
 updated_settings_bytes = updated_settings.encode("utf-8")
 updated_claude_bytes = updated_claude.encode("utf-8")
-
-
-def matches_original(path, existed, original):
-    if existed:
-        return path.is_file() and path.read_bytes() == original
-    return not path.exists()
+settings_tmp = stage_bytes(settings_file, updated_settings_bytes, settings_mode)
+claude_tmp = stage_bytes(claude_md, updated_claude_bytes, claude_mode)
 
 
 settings_committed = False
 claude_committed = False
+settings_displaced = None
+claude_displaced = None
+preserve_displaced = set()
 try:
-    if not matches_original(settings_file, True, settings_original):
-        raise RuntimeError(f"Refusing to replace concurrently modified hook config: {settings_file}")
-    if not matches_original(claude_md, claude_existed, claude_original):
-        raise RuntimeError(f"Refusing to replace concurrently modified CLAUDE.md: {claude_md}")
-    shutil.copy2(settings_file, str(settings_file) + ".backup")
-    if claude_existed:
-        shutil.copy2(claude_md, str(claude_md) + ".backup")
-    if not matches_original(settings_file, True, settings_original):
-        raise RuntimeError(f"Hook config changed before replace: {settings_file}")
-    os.replace(settings_tmp, settings_file)
+    settings_displaced = commit_staged(
+        settings_file,
+        settings_tmp,
+        expected_original=settings_original,
+        expected_mode=settings_mode,
+    )
     settings_committed = True
-    if not matches_original(claude_md, claude_existed, claude_original):
-        raise RuntimeError(f"CLAUDE.md changed before replace: {claude_md}")
-    os.replace(claude_tmp, claude_md)
+    claude_displaced = commit_staged(
+        claude_md,
+        claude_tmp,
+        expected_original=claude_original if claude_existed else None,
+        expected_mode=claude_mode if claude_existed else None,
+    )
     claude_committed = True
+    settings_backup = Path(str(settings_file) + ".backup")
+    claude_backup = Path(str(claude_md) + ".backup")
+    reject_symlink(settings_backup)
+    reject_symlink(claude_backup)
+    shutil.copy2(settings_displaced, settings_backup)
+    if claude_displaced is not None:
+        shutil.copy2(claude_displaced, claude_backup)
 except BaseException:
     rollback_errors = []
-    if settings_committed:
-        if settings_file.read_bytes() == updated_settings_bytes:
-            settings_file.write_bytes(settings_original)
-            os.chmod(settings_file, settings_mode)
-        else:
-            rollback_errors.append(f"external edit preserved: {settings_file}")
     if claude_committed:
-        if claude_md.read_bytes() != updated_claude_bytes:
-            rollback_errors.append(f"external edit preserved: {claude_md}")
-        elif claude_existed:
-            claude_md.write_bytes(claude_original)
-            os.chmod(claude_md, claude_mode)
-        else:
-            claude_md.unlink(missing_ok=True)
+        try:
+            rollback_commit(
+                claude_md,
+                claude_displaced,
+                expected_current=updated_claude_bytes,
+                expected_current_mode=claude_mode,
+            )
+            claude_displaced = None
+        except ConfigConflictError as exc:
+            rollback_errors.append(str(exc))
+            if claude_displaced is not None:
+                preserve_displaced.add(claude_displaced)
+    if settings_committed:
+        try:
+            rollback_commit(
+                settings_file,
+                settings_displaced,
+                expected_current=updated_settings_bytes,
+                expected_current_mode=settings_mode,
+            )
+            settings_displaced = None
+        except ConfigConflictError as exc:
+            rollback_errors.append(str(exc))
+            if settings_displaced is not None:
+                preserve_displaced.add(settings_displaced)
     if rollback_errors:
         raise RuntimeError("install rollback did not overwrite concurrent edits: " + "; ".join(rollback_errors))
     raise
 finally:
+    if settings_displaced is not None and settings_displaced not in preserve_displaced:
+        settings_displaced.unlink(missing_ok=True)
+    if claude_displaced is not None and claude_displaced not in preserve_displaced:
+        claude_displaced.unlink(missing_ok=True)
     settings_tmp.unlink(missing_ok=True)
     claude_tmp.unlink(missing_ok=True)
 

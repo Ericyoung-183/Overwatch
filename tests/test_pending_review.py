@@ -23,6 +23,17 @@ from pending_review import (  # noqa: E402
     read_deliverable_review,
     write_pending_marker,
 )
+from runtime_fs import project_identity_sha256  # noqa: E402
+
+
+PROJECT_ROOT = "/tmp/project"
+
+
+def project_fields() -> dict[str, str]:
+    return {
+        "project_root": PROJECT_ROOT,
+        "project_sha256": project_identity_sha256(PROJECT_ROOT),
+    }
 
 
 def test(name: str, condition: bool, detail: str = "") -> None:
@@ -39,7 +50,8 @@ def read_json(path: Path) -> dict[str, object]:
 
 def write_review(path: Path, session_id: str, body: str = "review body") -> None:
     path.write_text(
-        f"<!-- Overwatch Review #1 | 2026-07-18 10:00:00 | session: {session_id} | project: /tmp/project -->\n"
+        f"<!-- Overwatch Review #1 | 2026-07-18 10:00:00 | session: {session_id} | "
+        f"project-sha256: {project_identity_sha256(PROJECT_ROOT)} | project: {PROJECT_ROOT} -->\n"
         "<!-- META_END -->\n\n"
         f"{body}\n",
         encoding="utf-8",
@@ -54,6 +66,7 @@ def test_write_pending_marker_records_lifecycle_metadata() -> None:
         path = write_pending_marker(
             state_dir=str(state_dir),
             session_id="pending-lifecycle",
+            project_root=PROJECT_ROOT,
             review_path=str(review),
             now=1_700_000_000,
             ttl_hours=72,
@@ -75,6 +88,7 @@ def test_fresh_pending_remains_deliverable() -> None:
         marker = Path(write_pending_marker(
             state_dir=tmp,
             session_id="fresh",
+            project_root=PROJECT_ROOT,
             review_path=str(review),
             now=1_700_000_000,
             ttl_hours=72,
@@ -96,7 +110,7 @@ def test_expired_pending_is_removed_but_review_is_preserved() -> None:
         review.write_text("review body", encoding="utf-8")
         marker = Path(tmp) / "auto_review_pending_expired.json"
         marker.write_text(
-            json.dumps({"review_path": str(review), "session_id": "expired", "created_at": 1_700_000_000}),
+            json.dumps({"review_path": str(review), "session_id": "expired", "created_at": 1_700_000_000, **project_fields()}),
             encoding="utf-8",
         )
         status = cleanup_expired_pending(str(marker), now=1_700_000_000 + 73 * 3600)
@@ -113,7 +127,7 @@ def test_legacy_pending_uses_file_mtime_for_expiry() -> None:
         write_review(review, "no-expiry")
         marker = Path(tmp) / "auto_review_pending_legacy.json"
         marker.write_text(
-            json.dumps({"review_path": str(review), "session_id": "legacy"}),
+            json.dumps({"review_path": str(review), "session_id": "legacy", **project_fields()}),
             encoding="utf-8",
         )
         old_time = 1_700_000_000
@@ -131,6 +145,7 @@ def test_zero_ttl_disables_expiry() -> None:
         marker = Path(write_pending_marker(
             state_dir=tmp,
             session_id="no-expiry",
+            project_root=PROJECT_ROOT,
             review_path=str(review),
             now=1_700_000_000,
             ttl_hours=0,
@@ -155,6 +170,7 @@ def test_write_pending_marker_preserves_disabled_expiry_policy() -> None:
             path = write_pending_marker(
                 state_dir=tmp,
                 session_id="pending-no-expiry",
+                project_root=PROJECT_ROOT,
                 review_path=str(review),
                 now=1_700_000_000,
             )
@@ -189,6 +205,7 @@ def test_pending_delivery_binds_session_and_exact_review_bytes() -> None:
         marker = Path(write_pending_marker(
             state_dir=tmp,
             session_id="session-a",
+            project_root=PROJECT_ROOT,
             review_path=str(review),
             now=1_700_000_000,
             ttl_hours=72,
@@ -197,12 +214,14 @@ def test_pending_delivery_binds_session_and_exact_review_bytes() -> None:
         wrong_session, wrong_content = read_deliverable_review(
             str(marker),
             expected_session_id="session-b",
+            expected_project_root=PROJECT_ROOT,
             now=1_700_000_000 + 60,
         )
         write_review(review, "session-a", "replaced review")
         replaced, replaced_content = read_deliverable_review(
             str(marker),
             expected_session_id="session-a",
+            expected_project_root=PROJECT_ROOT,
             now=1_700_000_000 + 60,
         )
 
@@ -220,16 +239,18 @@ def test_delivery_acknowledgement_is_hash_bound_and_leaves_receipt() -> None:
             write_pending_marker(
                 state_dir=tmp,
                 session_id="delivery-receipt",
+                project_root=PROJECT_ROOT,
                 review_path=str(review),
             )
         )
         marker_hash = pending_review.pending_status(
-            str(marker), expected_session_id="delivery-receipt"
+            str(marker), expected_session_id="delivery-receipt", expected_project_root=PROJECT_ROOT
         )["marker_sha256"]
         wrong = acknowledge_pending_delivery(
             state_dir=tmp,
             pending_path=str(marker),
             session_id="delivery-receipt",
+            project_root=PROJECT_ROOT,
             expected_marker_sha256="0" * 64,
         )
         preserved_after_wrong = marker.exists()
@@ -237,11 +258,13 @@ def test_delivery_acknowledgement_is_hash_bound_and_leaves_receipt() -> None:
             state_dir=tmp,
             pending_path=str(marker),
             session_id="delivery-receipt",
+            project_root=PROJECT_ROOT,
             expected_marker_sha256=str(marker_hash),
         )
         receipt_matches = delivery_receipt_matches(
             state_dir=tmp,
             session_id="delivery-receipt",
+            project_root=PROJECT_ROOT,
             review_path=str(review),
             review_sha256=str(acknowledged["review_sha256"]),
         )
@@ -262,6 +285,7 @@ def test_pending_marker_rejects_cross_session_review_metadata() -> None:
             write_pending_marker(
                 state_dir=tmp,
                 session_id="session-a",
+                project_root=PROJECT_ROOT,
                 review_path=str(review),
             )
         except ValueError as exc:
@@ -273,6 +297,7 @@ def test_pending_marker_rejects_cross_session_review_metadata() -> None:
             write_pending_marker(
                 state_dir=tmp,
                 session_id="session-b",
+                project_root=PROJECT_ROOT,
                 review_path=str(review),
             )
         )
@@ -280,7 +305,7 @@ def test_pending_marker_rejects_cross_session_review_metadata() -> None:
         payload["session_id"] = "session-a"
         marker.write_text(json.dumps(payload), encoding="utf-8")
         status = pending_review.pending_status(
-            str(marker), expected_session_id="session-a"
+            str(marker), expected_session_id="session-a", expected_project_root=PROJECT_ROOT
         )
 
     test("writer rejects review metadata from another session", "does not match marker session" in error, error)
@@ -295,11 +320,12 @@ def test_delivery_ack_atomic_rename_survives_receipt_enrichment_failure() -> Non
             write_pending_marker(
                 state_dir=tmp,
                 session_id="atomic-receipt",
+                project_root=PROJECT_ROOT,
                 review_path=str(review),
             )
         )
         marker_hash = pending_review.pending_status(
-            str(marker), expected_session_id="atomic-receipt"
+            str(marker), expected_session_id="atomic-receipt", expected_project_root=PROJECT_ROOT
         )["marker_sha256"]
 
         with mock.patch.object(
@@ -312,6 +338,7 @@ def test_delivery_ack_atomic_rename_survives_receipt_enrichment_failure() -> Non
                     state_dir=tmp,
                     pending_path=str(marker),
                     session_id="atomic-receipt",
+                    project_root=PROJECT_ROOT,
                     expected_marker_sha256=str(marker_hash),
                 )
             except OSError as exc:
@@ -322,6 +349,7 @@ def test_delivery_ack_atomic_rename_survives_receipt_enrichment_failure() -> Non
         receipt_matches = delivery_receipt_matches(
             state_dir=tmp,
             session_id="atomic-receipt",
+            project_root=PROJECT_ROOT,
             review_path=str(review),
             review_sha256=hashlib.sha256(review.read_bytes()).hexdigest(),
         )
@@ -340,6 +368,7 @@ def test_pending_writer_rejects_unsafe_session_id() -> None:
             write_pending_marker(
                 state_dir=tmp,
                 session_id="../escape",
+                project_root=PROJECT_ROOT,
                 review_path=str(review),
             )
         except ValueError as exc:
@@ -355,7 +384,7 @@ def test_missing_review_file_preserves_pending_marker_for_retry() -> None:
         marker = Path(tmp) / "auto_review_pending_missing_review.json"
         review = Path(tmp) / "not-created.md"
         marker.write_text(
-            json.dumps({"review_path": str(review), "session_id": "missing-review", "created_at": 1_700_000_000}),
+            json.dumps({"review_path": str(review), "session_id": "missing-review", "created_at": 1_700_000_000, **project_fields()}),
             encoding="utf-8",
         )
 
@@ -377,6 +406,7 @@ def test_expired_missing_review_marker_is_removed() -> None:
                     "review_path": str(review),
                     "session_id": "expired-missing-review",
                     "created_at": 1_700_000_000,
+                    **project_fields(),
                 }
             ),
             encoding="utf-8",
@@ -398,6 +428,7 @@ def test_cleanup_preserves_marker_replaced_after_expiry_check() -> None:
                     "review_path": str(Path(tmp) / "old-review.md"),
                     "session_id": "old-session",
                     "created_at": 1_700_000_000,
+                    **project_fields(),
                 }
             ),
             encoding="utf-8",
@@ -406,6 +437,7 @@ def test_cleanup_preserves_marker_replaced_after_expiry_check() -> None:
             "review_path": str(Path(tmp) / "new-review.md"),
             "session_id": "new-session",
             "created_at": 1_800_000_000,
+            **project_fields(),
         }
         original_status = pending_review.pending_status
 

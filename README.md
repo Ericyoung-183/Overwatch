@@ -187,6 +187,7 @@ overwatch/
 ├── api_client.py          # Claude API client (zero external dependencies)
 ├── codex_exec_client.py   # Codex exec backend (uses existing Codex login)
 ├── pending_review.py      # Pending auto-review marker TTL and cleanup
+├── config_transaction.py  # Atomic installer config compare-and-swap
 ├── trigger_policy.py      # Shared auto-review trigger policy for Claude Code and Codex
 ├── context_manager.py     # Rolling summary + recent window management
 ├── prompts.py             # Review framework and prompt templates
@@ -226,10 +227,10 @@ overwatch/
 - **Retry-safe review cursor**: A failed backend or invalid review output records cooldown/error state without advancing `last_reviewed_turn`, so the same transcript can retry after cooldown.
 - **Recoverable review delivery**: Archive creation persists a delivery intent before marker publication; only the Builder's post-presentation, session/hash-bound acknowledgement converts the exact marker into a delivery receipt. Interrupted or rejected Hook delivery retries without calling the review backend again.
 - **Compare-and-swap pending cleanup**: Expiry cleanup deletes only the marker bytes it inspected and restores a concurrently replaced marker.
-- **Path-safe session identity**: Runtime hooks, engine state, pending markers, and review lookup accept only bounded ASCII session IDs. Registry fallback requires an exact project root; a live Codex thread ID takes precedence.
+- **Session plus project identity**: Runtime hooks, transcript adapters, engine state, review artifacts, pending markers, triggers, receipts, and review lookup bind one bounded session ID to one canonical Git project root. Reusing a task in another project fails closed without delivering review or agenda source data.
 - **Runtime separation**: Claude Code keeps the Claude/API default path. Codex app/CLI can use the Codex adapter plus `codex_exec` backend without changing Claude defaults.
 - **Shared trigger policy**: Claude Code and Codex use the same `trigger_policy.py` decision logic; runtime hooks only adapt transcript parsing and review dispatch.
-- **Relocatable installation**: Both installers replace stale or duplicate managed Hook paths with one shell-quoted current path. Hook Python imports receive the install directory through the environment, so spaces and quotes remain safe. Install and shared-uninstall replacements compare the exact configuration bytes read during preflight and refuse to overwrite concurrent external edits.
+- **Relocatable installation**: Both installers replace stale or duplicate managed Hook paths with one shell-quoted current path. Hook Python imports receive the install directory through the environment, so spaces and quotes remain safe. Install and shared-uninstall replacements reject symbolic-link configs and use atomic exchange/no-replace compare-and-swap. A pre-commit conflict restores the external bytes; if an external write lands immediately after exchange, Overwatch leaves that edit current and preserves the displaced original in a named `.overwatch-recovery.*.bak` file.
 - **Mutation-complete release gate**: Release checks snapshot candidate files and modes recursively, including ignored files; only named runtime/cache artifacts such as `state/`, `reviews/`, `overwatch.log`, bytecode, and editor caches are excluded.
 
 ## Custom Adapters

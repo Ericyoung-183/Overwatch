@@ -217,10 +217,10 @@ def test_claude_installer_preserves_concurrent_settings_edit() -> None:
         )
         installer = install_root / "install.sh"
         text = installer.read_text(encoding="utf-8")
-        needle = "if not matches_original(settings_file, True, settings_original):\n"
+        needle = "    settings_displaced = commit_staged(\n"
         injected = (
-            "settings_file.write_text('{\"hooks\": {\"External\": []}}\\n', encoding='utf-8')\n"
-            "    " + needle
+            "    settings_file.write_text('{\"hooks\": {\"External\": []}}\\n', encoding='utf-8')\n"
+            + needle
         )
         installer.write_text(text.replace(needle, injected, 1), encoding="utf-8")
         config_dir = base / "claude"
@@ -247,6 +247,35 @@ def test_claude_installer_preserves_concurrent_settings_edit() -> None:
     test("Claude installer rejects concurrent settings edit", result.returncode != 0 and "concurrently modified" in result.stderr, result.stdout + result.stderr)
     test("Claude installer preserves concurrent settings edit", "External" in current.get("hooks", {}), str(current))
     test("Claude installer leaves CLAUDE.md untouched on CAS failure", claude_current == "user content\n", claude_current)
+
+
+def test_claude_installer_rejects_symlink_settings() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        config_dir = root / "claude"
+        config_dir.mkdir()
+        target = config_dir / "real-settings.json"
+        target.write_text('{"hooks": {}}\n', encoding="utf-8")
+        before = target.read_bytes()
+        linked = config_dir / "settings.json"
+        linked.symlink_to(target)
+        result = subprocess.run(
+            ["bash", str(ROOT / "install.sh")],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={
+                **os.environ,
+                "HOME": str(root / "home"),
+                "CC_SETTINGS_PATH": str(linked),
+            },
+        )
+        unchanged = target.read_bytes() == before
+        claude_absent = not (config_dir / "CLAUDE.md").exists()
+
+    test("Claude installer rejects symbolic-link settings", result.returncode != 0 and "symbolic-link" in result.stderr, result.stdout + result.stderr)
+    test("Claude installer leaves symbolic-link target unchanged", unchanged)
+    test("Claude installer creates no CLAUDE.md after symlink rejection", claude_absent)
 
 
 def test_installed_hook_runs_when_overwatch_path_contains_single_quote() -> None:
@@ -531,12 +560,14 @@ def test_uninstaller_preserves_concurrent_config_edit() -> None:
         )
         uninstaller = install_root / "uninstall.sh"
         text = uninstaller.read_text(encoding="utf-8")
-        needle = "    for path, original, _, _, _ in updates:\n"
+        needle = "        displaced = commit_staged(\n"
         injected = (
-            "    if updates:\n"
-            "        updates[0][0].write_text('{\"hooks\": {\"External\": []}}\\n', encoding='utf-8')\n"
+            "        if path == updates[0][0]:\n"
+            "            path.write_text('{\"hooks\": {\"External\": []}}\\n', encoding='utf-8')\n"
             + needle
         )
+        if needle not in text:
+            raise AssertionError("uninstaller transaction injection point is missing")
         uninstaller.write_text(text.replace(needle, injected, 1), encoding="utf-8")
         config_dir = base / "claude"
         config_dir.mkdir()
@@ -565,6 +596,34 @@ def test_uninstaller_preserves_concurrent_config_edit() -> None:
     test("uninstaller preserves concurrent config edit", "External" in current.get("hooks", {}), str(current))
 
 
+def test_uninstaller_rejects_symlink_config() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        config_dir = root / "claude"
+        config_dir.mkdir()
+        target = config_dir / "real-settings.json"
+        target.write_text('{"hooks": {"Stop": []}}\n', encoding="utf-8")
+        before = target.read_bytes()
+        linked = config_dir / "settings.json"
+        linked.symlink_to(target)
+        result = subprocess.run(
+            ["bash", str(ROOT / "uninstall.sh")],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={
+                **os.environ,
+                "HOME": str(root / "home"),
+                "CC_SETTINGS_PATH": str(linked),
+                "CODEX_HOOKS_PATH": str(root / "missing-codex.json"),
+            },
+        )
+        unchanged = target.read_bytes() == before
+
+    test("uninstaller rejects symbolic-link config", result.returncode != 0 and "symbolic-link" in result.stderr, result.stdout + result.stderr)
+    test("uninstaller leaves symbolic-link target unchanged", unchanged)
+
+
 def test_installer_preserves_unmarked_overwatch_like_user_section() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         base = Path(tmp)
@@ -590,6 +649,7 @@ if __name__ == "__main__":
     test_claude_installer_relocates_managed_hooks_with_quoted_paths()
     test_claude_installer_uses_custom_settings_as_the_config_authority()
     test_claude_installer_preserves_concurrent_settings_edit()
+    test_claude_installer_rejects_symlink_settings()
     test_installed_hook_runs_when_overwatch_path_contains_single_quote()
     test_claude_uninstall_removes_bash_prefixed_managed_hooks()
     test_claude_uninstall_removes_snippet_without_settings_file()
@@ -597,5 +657,6 @@ if __name__ == "__main__":
     test_uninstaller_refuses_incomplete_markers_without_changing_claude_md()
     test_uninstaller_preflights_all_runtime_configs_before_any_write()
     test_uninstaller_preserves_concurrent_config_edit()
+    test_uninstaller_rejects_symlink_config()
     test_installer_preserves_unmarked_overwatch_like_user_section()
     print("claude installer tests passed")

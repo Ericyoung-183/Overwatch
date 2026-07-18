@@ -116,6 +116,7 @@ python3 -m py_compile \
   "$ROOT/pending_review.py" \
   "$ROOT/anchor_capture.py" \
   "$ROOT/runtime_fs.py" \
+  "$ROOT/config_transaction.py" \
   "$ROOT/session_registry.py" \
   "$ROOT/trigger_state.py" \
   "$ROOT/trigger_policy.py" \

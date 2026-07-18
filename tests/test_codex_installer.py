@@ -201,9 +201,9 @@ def test_codex_installer_preserves_concurrent_hook_edit() -> None:
         )
         installer = install_root / "install_codex.sh"
         text = installer.read_text(encoding="utf-8")
-        needle = "if hooks_file.read_bytes() != original:\n"
+        needle = "    displaced = commit_staged(\n"
         injected = (
-            "hooks_file.write_text('{\"hooks\": {\"External\": []}}\\n', encoding='utf-8')\n"
+            "    hooks_file.write_text('{\"hooks\": {\"External\": []}}\\n', encoding='utf-8')\n"
             + needle
         )
         installer.write_text(text.replace(needle, injected, 1), encoding="utf-8")
@@ -225,6 +225,31 @@ def test_codex_installer_preserves_concurrent_hook_edit() -> None:
 
     test("Codex installer rejects concurrent hook edit", result.returncode != 0 and "concurrently modified" in result.stderr, result.stdout + result.stderr)
     test("Codex installer preserves concurrent hook edit", "External" in current.get("hooks", {}), str(current))
+
+
+def test_codex_installer_rejects_symlink_hook_config() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        target = root / "real-hooks.json"
+        target.write_text('{"hooks": {}}\n', encoding="utf-8")
+        before = target.read_bytes()
+        linked = root / "hooks.json"
+        linked.symlink_to(target)
+        result = subprocess.run(
+            ["bash", str(INSTALLER)],
+            text=True,
+            capture_output=True,
+            check=False,
+            env={
+                **os.environ,
+                "CODEX_HOOKS_PATH": str(linked),
+                "OVERWATCH_CODEX_COMMAND": sys.executable,
+            },
+        )
+        unchanged = target.read_bytes() == before
+
+    test("Codex installer rejects symbolic-link hook config", result.returncode != 0 and "symbolic-link" in result.stdout + result.stderr, result.stdout + result.stderr)
+    test("Codex installer leaves symbolic-link target unchanged", unchanged)
 
 
 def test_codex_installer_replaces_relocated_and_duplicate_managed_hooks() -> None:
@@ -363,6 +388,7 @@ if __name__ == "__main__":
     test_codex_installer_registers_hooks_idempotently()
     test_codex_installer_can_configure_status_relay_dir()
     test_codex_installer_preserves_concurrent_hook_edit()
+    test_codex_installer_rejects_symlink_hook_config()
     test_codex_installer_replaces_relocated_and_duplicate_managed_hooks()
     test_codex_uninstall_removes_current_hooks_and_preserves_foreign_names()
     test_release_check_runs_codex_installer_tests()

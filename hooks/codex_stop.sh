@@ -90,6 +90,11 @@ if [ "$SESSION_VALID" != "true" ]; then
 fi
 TRANSCRIPT_PATH=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('transcript_path',''))" 2>/dev/null || echo "")
 CWD=$(echo "$INPUT" | python3 -c "import os,sys,json; d=json.load(sys.stdin); print(d.get('cwd') or os.getcwd())" 2>/dev/null || pwd)
+PROJECT_ROOT=$(OW_DIR="$OVERWATCH_DIR" OW_CWD="$CWD" python3 -c "
+import os, sys; sys.path.insert(0, os.environ['OW_DIR'])
+from runtime_fs import canonical_project_root
+print(canonical_project_root(os.environ.get('OW_CWD', '')))
+" 2>/dev/null || echo "")
 
 if [ -z "$TRANSCRIPT_PATH" ] && [ -n "$SESSION_ID" ]; then
     TRANSCRIPT_PATH=$(OW_SID="$SESSION_ID" python3 - <<'PY' 2>/dev/null || true
@@ -127,17 +132,21 @@ if [ "$ALLOWED" = "no" ]; then
     exit 0
 fi
 
-OW_DIR="$OVERWATCH_DIR" OW_STATE_DIR="$STATE_DIR" OW_CWD="$CWD" OW_SID="$SESSION_ID" python3 -c "
+if ! OW_DIR="$OVERWATCH_DIR" OW_STATE_DIR="$STATE_DIR" OW_CWD="$PROJECT_ROOT" OW_SID="$SESSION_ID" python3 -c "
 import os, sys
 sys.path.insert(0, os.environ['OW_DIR'])
 from session_registry import record_session
 record_session(os.environ['OW_STATE_DIR'], os.environ['OW_CWD'], os.environ['OW_SID'])
-" 2>/dev/null
+" 2>>"$LOG_FILE"; then
+    write_stop_status "skipped" "project_scope_mismatch"
+    OUTPUT='{"continue": true, "systemMessage": "[Overwatch] Session belongs to another project; review dispatch blocked."}'
+    exit 0
+fi
 
 PENDING_FILE="${STATE_DIR}/auto_review_pending_${SESSION_ID}.json"
 LOCK_FILE="${STATE_DIR}/${SESSION_ID}.lock"
 if [ -f "$PENDING_FILE" ]; then
-    PENDING_ACTION=$(OW_DIR="$OVERWATCH_DIR" OW_PENDING="$PENDING_FILE" OW_SID="$SESSION_ID" python3 - <<'PY' 2>/dev/null || echo "invalid_marker"
+    PENDING_ACTION=$(OW_DIR="$OVERWATCH_DIR" OW_PENDING="$PENDING_FILE" OW_SID="$SESSION_ID" OW_ROOT="$PROJECT_ROOT" python3 - <<'PY' 2>/dev/null || echo "invalid_marker"
 import os
 import sys
 
@@ -147,6 +156,7 @@ from pending_review import cleanup_expired_pending
 status = cleanup_expired_pending(
     os.environ["OW_PENDING"],
     expected_session_id=os.environ["OW_SID"],
+    expected_project_root=os.environ["OW_ROOT"],
 )
 print("deliver" if status.get("deliverable") else (status.get("reason") or "invalid_marker"))
 PY
@@ -239,7 +249,7 @@ fi
 OVERWATCH_ADAPTER=codex OVERWATCH_BACKEND=codex_exec OVERWATCH_REVIEW_MODEL="${OVERWATCH_REVIEW_MODEL:-gpt-5.5}" nohup python3 "$OVERWATCH_PY" \
     --session-id "$SESSION_ID" \
     --transcript "$TRANSCRIPT_PATH" \
-    --cwd "$CWD" \
+    --cwd "$PROJECT_ROOT" \
     >> "$LOG_FILE" 2>&1 &
 
 exit 0

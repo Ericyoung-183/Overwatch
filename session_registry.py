@@ -10,7 +10,11 @@ import time
 from pathlib import Path
 
 from config import require_valid_session_id, valid_session_id
-from runtime_fs import ensure_private_directory, fsync_directory
+from runtime_fs import canonical_project_root, ensure_private_directory, fsync_directory
+
+
+class SessionProjectMismatchError(ValueError):
+    """Raised when one session ID is observed in a different project root."""
 
 
 def _atomic_json(path: Path, payload: dict) -> None:
@@ -45,7 +49,11 @@ def _load_records(path: Path) -> dict[str, dict]:
         }
     # Read the original cwd -> session map without preserving its unsafe shape.
     return {
-        sid: {"cwd": os.path.realpath(cwd), "updated_at": 0.0}
+        sid: {
+            "cwd": canonical_project_root(cwd),
+            "project_root": canonical_project_root(cwd),
+            "updated_at": 0.0,
+        }
         for cwd, sid in payload.items()
         if isinstance(cwd, str) and valid_session_id(sid)
     }
@@ -53,6 +61,9 @@ def _load_records(path: Path) -> dict[str, dict]:
 
 def record_session(state_dir: str, cwd: str, session_id: str, *, now: float | None = None) -> None:
     session_id = require_valid_session_id(session_id)
+    project_root = canonical_project_root(cwd)
+    if not project_root:
+        raise ValueError("session project root is required")
     state = Path(state_dir)
     ensure_private_directory(state)
     map_path = state / "session_map.json"
@@ -60,8 +71,19 @@ def record_session(state_dir: str, cwd: str, session_id: str, *, now: float | No
     with lock_path.open("a+", encoding="utf-8") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         records = _load_records(map_path)
+        existing = records.get(session_id)
+        if isinstance(existing, dict):
+            existing_root = canonical_project_root(
+                str(existing.get("project_root") or existing.get("cwd") or "")
+            )
+            if existing_root and existing_root != project_root:
+                raise SessionProjectMismatchError(
+                    f"session {session_id!r} is already bound to project "
+                    f"{existing_root!r}, not {project_root!r}"
+                )
         records[session_id] = {
-            "cwd": os.path.realpath(cwd),
+            "cwd": project_root,
+            "project_root": project_root,
             "updated_at": time.time() if now is None else float(now),
         }
         newest = sorted(
@@ -78,7 +100,7 @@ def sessions_for_project(state_dir: str, project_dir: str) -> list[str]:
     map_path = state / "session_map.json"
     if not map_path.is_file():
         return []
-    project = os.path.realpath(project_dir)
+    project = canonical_project_root(project_dir)
     lock_path = state / "session_map.lock"
     with lock_path.open("a+", encoding="utf-8") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
@@ -86,10 +108,32 @@ def sessions_for_project(state_dir: str, project_dir: str) -> list[str]:
         fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
     matches: list[tuple[float, str]] = []
     for sid, record in records.items():
-        root = os.path.realpath(str(record.get("cwd") or ""))
+        root = canonical_project_root(
+            str(record.get("project_root") or record.get("cwd") or "")
+        )
         if root == project:
             matches.append((float(record.get("updated_at") or 0), sid))
     return [sid for _, sid in sorted(matches, reverse=True)]
+
+
+def project_root_for_session(state_dir: str, session_id: str) -> str:
+    """Return the canonical project root already bound to a session."""
+    session_id = require_valid_session_id(session_id)
+    state = Path(state_dir)
+    map_path = state / "session_map.json"
+    if not map_path.is_file():
+        return ""
+    lock_path = state / "session_map.lock"
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
+        records = _load_records(map_path)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    record = records.get(session_id)
+    if not isinstance(record, dict):
+        return ""
+    return canonical_project_root(
+        str(record.get("project_root") or record.get("cwd") or "")
+    )
 
 
 def session_lock_active(state_dir: str, session_id: str) -> bool:

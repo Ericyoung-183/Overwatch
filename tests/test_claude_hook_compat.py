@@ -11,12 +11,15 @@ import subprocess
 import tempfile
 import uuid
 from pathlib import Path
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_TMP = tempfile.TemporaryDirectory(prefix="overwatch-claude-hook-tests-")
 STATE_DIR = Path(RUNTIME_TMP.name) / "state"
 STATE_DIR.mkdir(parents=True, exist_ok=True)
+sys.path.insert(0, str(ROOT))
+from runtime_fs import canonical_project_root, project_identity_sha256  # noqa: E402
 
 
 def test(name: str, condition: bool, detail: str = "") -> None:
@@ -27,13 +30,18 @@ def test(name: str, condition: bool, detail: str = "") -> None:
     raise AssertionError(name)
 
 
-def write_fresh_pending(pending_file: Path, review_file: Path, session_id: str) -> None:
+def write_fresh_pending(
+    pending_file: Path, review_file: Path, session_id: str, project_root: str
+) -> None:
+    project_root = canonical_project_root(project_root)
     pending_file.write_text(
         json.dumps(
             {
                 "review_path": str(review_file.resolve()),
                 "review_sha256": hashlib.sha256(review_file.read_bytes()).hexdigest(),
                 "session_id": session_id,
+                "project_root": project_root,
+                "project_sha256": project_identity_sha256(project_root),
                 "created_at": 4_102_444_800,
                 "ttl_hours": 72,
             }
@@ -246,7 +254,7 @@ def test_claude_manual_trigger_shell_quotes_dynamic_arguments() -> None:
 
     test("Claude manual review keeps session id in one shell token", review_args[3] == sid, review_command)
     test("Claude manual review keeps transcript in one shell token", review_args[5] == transcript, review_command)
-    test("Claude manual review keeps cwd in one shell token", review_args[7] == cwd, review_command)
+    test("Claude manual review keeps cwd in one shell token", review_args[7] == canonical_project_root(cwd), review_command)
     result_path = review_args[review_args.index("--result-file") + 1]
     test("Claude manual review has unique result path", result_path.endswith(".json"), review_command)
     test("Claude exact-result lookup keeps session id in one shell token", find_args[-1] == sid, find_command)
@@ -263,7 +271,8 @@ def test_claude_prompt_delivers_fresh_pending_review() -> None:
     original_pending = read_optional(pending_file)
 
     review_file.write_text(
-        f"<!-- Overwatch Review #1 | 2099-01-01 00:00 | session: {sid} | project: /tmp/claude-project -->\n"
+        f"<!-- Overwatch Review #1 | 2099-01-01 00:00 | session: {sid} | "
+        f"project-sha256: {project_identity_sha256('/tmp/claude-project')} | project: {canonical_project_root('/tmp/claude-project')} -->\n"
         "<!-- META_END -->\n\n"
         "CLAUDE FRESH AUTO REVIEW BODY\n"
         + ("X" * 9000)
@@ -271,7 +280,7 @@ def test_claude_prompt_delivers_fresh_pending_review() -> None:
         encoding="utf-8",
     )
     expected_review_hash = hashlib.sha256(review_file.read_bytes()).hexdigest()
-    write_fresh_pending(pending_file, review_file, sid)
+    write_fresh_pending(pending_file, review_file, sid, "/tmp/claude-project")
     receipt_file = STATE_DIR / f"auto_review_delivered_{sid}.json"
 
     try:
@@ -326,19 +335,20 @@ def test_claude_hooks_surface_missing_and_invalid_pending_evidence() -> None:
     original_trigger = read_optional(trigger_file)
     pending_file = STATE_DIR / f"auto_review_pending_{sid}.json"
     missing_review = STATE_DIR / f"{sid}-missing.md"
-    pending_file.write_text(
-        json.dumps(
-            {
-                "review_path": str(missing_review),
-                "session_id": sid,
-                "created_at": 4_102_444_800,
-                "ttl_hours": 72,
-            }
-        ),
-        encoding="utf-8",
-    )
-
     with tempfile.TemporaryDirectory() as tmp:
+        pending_file.write_text(
+            json.dumps(
+                {
+                    "review_path": str(missing_review),
+                    "session_id": sid,
+                    "project_root": canonical_project_root(tmp),
+                    "project_sha256": project_identity_sha256(tmp),
+                    "created_at": 4_102_444_800,
+                    "ttl_hours": 72,
+                }
+            ),
+            encoding="utf-8",
+        )
         transcript = Path(tmp) / "claude.jsonl"
         transcript.write_text(claude_user_event("normal message") + "\n", encoding="utf-8")
         try:
@@ -393,12 +403,13 @@ def test_claude_prompt_preserves_pending_when_delivery_composition_fails() -> No
     trigger_file.unlink(missing_ok=True)
     trigger_file.mkdir()
     review_file.write_text(
-        f"<!-- Overwatch Review #1 | 2099-01-01 00:00 | session: {sid} | project: /tmp/claude-project -->\n"
+        f"<!-- Overwatch Review #1 | 2099-01-01 00:00 | session: {sid} | "
+        f"project-sha256: {project_identity_sha256('/tmp/claude-project')} | project: {canonical_project_root('/tmp/claude-project')} -->\n"
         "<!-- META_END -->\n\n"
         "review body",
         encoding="utf-8",
     )
-    write_fresh_pending(pending_file, review_file, sid)
+    write_fresh_pending(pending_file, review_file, sid, "/tmp/claude-project")
     try:
         response = run_hook(
             "claude_code_prompt.sh",
@@ -440,19 +451,21 @@ def test_claude_pending_review_and_capture_are_composed_together() -> None:
     marker = STATE_DIR / f"anchor_capture_{sid}.json"
     helper = Path(RUNTIME_TMP.name) / "pending-capture-anchor.py"
     helper.write_text("raise SystemExit(0)\n", encoding="utf-8")
+    capture_project = "/tmp/claude-pending-capture"
     review_file.write_text(
-        f"<!-- Overwatch Review #1 | 2099-01-01 00:00 | session: {sid} | project: /tmp/claude-project -->\n"
+        f"<!-- Overwatch Review #1 | 2099-01-01 00:00 | session: {sid} | "
+        f"project-sha256: {project_identity_sha256(capture_project)} | project: {canonical_project_root(capture_project)} -->\n"
         "<!-- META_END -->\n\nPENDING REVIEW AND CAPTURE",
         encoding="utf-8",
     )
-    write_fresh_pending(pending_file, review_file, sid)
+    write_fresh_pending(pending_file, review_file, sid, capture_project)
     try:
         response = run_hook(
             "claude_code_prompt.sh",
             {
                 "session_id": sid,
                 "transcript_path": "",
-                "cwd": "/tmp/claude-pending-capture",
+                "cwd": capture_project,
                 "user_prompt": "逐条处理：\n1. First issue\n2. Second issue",
             },
             env={"ANCHOR_HELPER": str(helper)},
@@ -496,6 +509,29 @@ def test_claude_prompt_injects_two_signal_capture_gate() -> None:
     test("Claude hook persists the capture candidate", marker_created, str(marker))
 
 
+def test_claude_prompt_surfaces_anchor_context_failure() -> None:
+    sid = "claude-anchor-context-failure"
+    helper = Path(RUNTIME_TMP.name) / "broken-anchor.py"
+    helper.write_text(
+        "import sys\nprint('broken tracker', file=sys.stderr)\nraise SystemExit(2)\n",
+        encoding="utf-8",
+    )
+    response = run_hook(
+        "claude_code_prompt.sh",
+        {
+            "session_id": sid,
+            "transcript_path": "",
+            "cwd": "/tmp/claude-anchor-context-failure",
+            "prompt": "继续",
+        },
+        env={"ANCHOR_HELPER": str(helper)},
+    )
+    context = str(response.get("hookSpecificOutput", {}).get("additionalContext", ""))
+
+    test("Claude prompt surfaces Anchor context failure", "[Anchor Warning]" in context, context)
+    test("Claude Anchor warning blocks memory reconstruction", "Do not reconstruct" in context, context)
+
+
 if __name__ == "__main__":
     test_non_codex_config_defaults_are_claude_api()
     test_claude_stop_still_uses_system_message_status()
@@ -509,5 +545,6 @@ if __name__ == "__main__":
     test_claude_prompt_preserves_pending_when_delivery_composition_fails()
     test_claude_pending_marker_requires_builder_acknowledgement()
     test_claude_prompt_injects_two_signal_capture_gate()
+    test_claude_prompt_surfaces_anchor_context_failure()
     test_claude_pending_review_and_capture_are_composed_together()
     print("claude hook compatibility tests passed")

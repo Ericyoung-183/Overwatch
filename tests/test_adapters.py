@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -11,8 +12,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from adapters.claude_code import parse as parse_claude, transcript_session_ids as claude_session_ids
-from adapters.codex import parse as parse_codex, transcript_session_ids as codex_session_ids
+from adapters.claude_code import (
+    parse as parse_claude,
+    transcript_project_cwds as claude_project_cwds,
+    transcript_session_ids as claude_session_ids,
+)
+from adapters.codex import (
+    parse as parse_codex,
+    transcript_project_cwds as codex_project_cwds,
+    transcript_session_ids as codex_session_ids,
+)
 from overwatch import transcript_identity_error
 
 
@@ -97,18 +106,22 @@ def test_native_transcript_identity_is_extracted_and_enforced() -> None:
         claude_path = Path(tmp) / "claude.jsonl"
         write_jsonl(
             codex_path,
-            [{"type": "session_meta", "payload": {"id": "codex-native"}}],
+            [{"type": "session_meta", "payload": {"id": "codex-native", "cwd": str(Path(tmp) / "codex-project")}}],
         )
         write_jsonl(
             claude_path,
-            [{"type": "user", "sessionId": "claude-native", "message": {"content": "hi"}}],
+            [{"type": "user", "sessionId": "claude-native", "cwd": str(Path(tmp) / "claude-project"), "message": {"content": "hi"}}],
         )
 
         codex_ids = codex_session_ids(str(codex_path))
         claude_ids = claude_session_ids(str(claude_path))
+        codex_cwds = codex_project_cwds(str(codex_path))
+        claude_cwds = claude_project_cwds(str(claude_path))
 
     test("Codex adapter extracts native session id", codex_ids == {"codex-native"}, str(codex_ids))
     test("Claude adapter extracts native session id", claude_ids == {"claude-native"}, str(claude_ids))
+    test("Codex adapter extracts transcript project", codex_cwds == {os.path.realpath(Path(tmp) / "codex-project")}, str(codex_cwds))
+    test("Claude adapter extracts transcript project", claude_cwds == {os.path.realpath(Path(tmp) / "claude-project")}, str(claude_cwds))
     test("matching transcript identity passes", transcript_identity_error("codex-native", codex_ids) == "")
     test("wrong transcript identity is rejected", transcript_identity_error("wrong", codex_ids) == "session_id_mismatch")
     test("missing transcript identity is rejected", transcript_identity_error("expected", set()) == "missing_native_session_id")

@@ -4,6 +4,7 @@ Parses Claude Code's JSONL session transcripts into Turn objects.
 Each line in the JSONL is a JSON object with a 'type' field indicating the message type.
 """
 import json
+import os
 
 from config import SKIP_TYPES, SKIP_USER_PATTERNS, MAX_TURN_CONTENT_CHARS
 from adapters import Turn
@@ -151,6 +152,22 @@ def transcript_session_ids(transcript_path: str) -> set[str]:
             if session_id:
                 session_ids.add(session_id)
     return session_ids
+
+
+def transcript_project_cwds(transcript_path: str) -> set[str]:
+    cwds: set[str] = set()
+    with open(transcript_path, "r", encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            cwd = str(record.get("cwd") or record.get("projectPath") or "").strip()
+            if cwd:
+                cwds.add(os.path.realpath(cwd))
+    return cwds
 
 
 def parse(transcript_path: str, offset: int = 0) -> list[Turn]:

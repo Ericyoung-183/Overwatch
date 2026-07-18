@@ -41,10 +41,18 @@ import json
 import os
 import shlex
 import shutil
-import tempfile
 from pathlib import Path
 
 overwatch_dir = os.path.realpath(os.environ["OW_DIR"])
+import sys
+sys.path.insert(0, overwatch_dir)
+from config_transaction import (
+    ConfigConflictError,
+    commit_staged,
+    reject_symlink,
+    rollback_commit,
+    stage_bytes,
+)
 settings_inputs = [
     ("Claude Code", os.environ.get("OW_CC_SETTINGS", "")),
     ("Codex", os.environ.get("OW_CODEX_SETTINGS", "")),
@@ -77,24 +85,6 @@ def is_managed(command):
     )
 
 
-def sync_parent(path: Path) -> None:
-    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def stage_bytes(path: Path, content: bytes, mode: int) -> str:
-    descriptor, temporary = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    os.fchmod(descriptor, mode)
-    with os.fdopen(descriptor, "wb") as stream:
-        stream.write(content)
-        stream.flush()
-        os.fsync(stream.fileno())
-    return temporary
-
-
 updates = []
 seen = set()
 for runtime, value in settings_inputs:
@@ -102,6 +92,7 @@ for runtime, value in settings_inputs:
         print(f"No {runtime} hook config found (skipped)")
         continue
     path = Path(value)
+    reject_symlink(path)
     key = os.path.realpath(path)
     if key in seen:
         continue
@@ -131,6 +122,7 @@ for runtime, value in settings_inputs:
 
 if claude_md_value:
     path = Path(claude_md_value)
+    reject_symlink(path)
     if path.is_file():
         original = path.read_bytes()
         text = original.decode("utf-8")
@@ -154,42 +146,48 @@ else:
     print("No Overwatch section found in CLAUDE.md (skipped)")
 
 staged = {}
-replaced = []
+committed = []
+preserve_displaced = set()
 try:
     for path, original, updated, mode, _ in updates:
         staged[path] = stage_bytes(path, updated, mode)
-    for path, original, _, _, _ in updates:
-        if not path.is_file() or path.read_bytes() != original:
-            raise RuntimeError(f"Refusing to replace concurrently modified config: {path}")
-    for path, _, _, _, _ in updates:
-        shutil.copy2(path, str(path) + ".backup")
     for path, original, updated, mode, _ in updates:
-        if not path.is_file() or path.read_bytes() != original:
-            raise RuntimeError(f"Config changed before replace: {path}")
-        os.replace(staged.pop(path), path)
-        sync_parent(path)
-        replaced.append((path, original, updated, mode))
-except Exception:
+        displaced = commit_staged(
+            path,
+            staged[path],
+            expected_original=original,
+            expected_mode=mode,
+        )
+        committed.append((path, updated, displaced))
+    for path, _, displaced in committed:
+        backup = Path(str(path) + ".backup")
+        reject_symlink(backup)
+        if displaced is None:
+            raise RuntimeError(f"expected existing config disappeared: {path}")
+        shutil.copy2(displaced, backup)
+except BaseException:
     rollback_errors = []
-    for path, original, updated, mode in reversed(replaced):
+    for path, updated, displaced in reversed(committed):
         try:
-            if not path.is_file() or path.read_bytes() != updated:
-                rollback_errors.append(f"external edit preserved: {path}")
-                continue
-            rollback = stage_bytes(path, original, mode)
-            os.replace(rollback, path)
-            sync_parent(path)
-        except Exception as exc:
+            rollback_commit(
+                path,
+                displaced,
+                expected_current=updated,
+                expected_current_mode=mode,
+            )
+        except ConfigConflictError as exc:
             rollback_errors.append(f"{path}: {exc}")
+            if displaced is not None:
+                preserve_displaced.add(displaced)
     if rollback_errors:
         raise RuntimeError("uninstall failed and rollback was incomplete: " + "; ".join(rollback_errors))
     raise
 finally:
+    for _, _, displaced in committed:
+        if displaced is not None and displaced not in preserve_displaced:
+            displaced.unlink(missing_ok=True)
     for temporary in staged.values():
-        try:
-            os.remove(temporary)
-        except FileNotFoundError:
-            pass
+        temporary.unlink(missing_ok=True)
 
 for _, _, _, _, message in updates:
     print(message)

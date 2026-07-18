@@ -18,10 +18,22 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import context_manager
+import config_transaction
 import overwatch
 import trigger_state
-from session_registry import record_session, session_lock_active, sessions_for_project
-from trigger_state import read_auto_review_bytes, trigger_path, write_trigger
+from runtime_fs import canonical_project_root, project_identity_sha256
+from session_registry import (
+    SessionProjectMismatchError,
+    record_session,
+    session_lock_active,
+    sessions_for_project,
+)
+from trigger_state import (
+    auto_review_metadata,
+    read_auto_review_bytes,
+    trigger_path,
+    write_trigger,
+)
 
 
 def test(name: str, condition: bool, detail: str = "") -> None:
@@ -71,6 +83,134 @@ def test_session_registry_does_not_bind_descendant_projects() -> None:
     test("registry refuses ancestor session binding for a descendant", descendant == [], str(descendant))
 
 
+def test_session_registry_refuses_same_session_in_another_project() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        state = Path(tmp) / "state"
+        first = Path(tmp) / "first"
+        second = Path(tmp) / "second"
+        first.mkdir()
+        second.mkdir()
+        record_session(str(state), str(first), "project-bound-session")
+        try:
+            record_session(str(state), str(second), "project-bound-session")
+        except SessionProjectMismatchError as exc:
+            error = str(exc)
+        else:
+            error = ""
+        still_first = sessions_for_project(str(state), str(first))
+        second_empty = sessions_for_project(str(state), str(second))
+
+    test("registry rejects same session in another project", "already bound" in error, error)
+    test("registry preserves original project binding", still_first == ["project-bound-session"], str(still_first))
+    test("registry does not create a second binding", second_empty == [], str(second_empty))
+
+
+def test_session_registry_rejects_empty_project_identity() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            record_session(str(Path(tmp) / "state"), "", "empty-project-session")
+        except ValueError as exc:
+            error = str(exc)
+        else:
+            error = ""
+
+    test("registry rejects an empty project identity", "project root is required" in error, error)
+
+
+def test_engine_rejects_transcript_from_another_project_before_lock() -> None:
+    session_id = "project-mismatch-engine"
+    first = canonical_project_root("/tmp/overwatch-project-first")
+    second = canonical_project_root("/tmp/overwatch-project-second")
+    with (
+        mock.patch.object(overwatch, "project_is_allowed", return_value=True),
+        mock.patch.object(overwatch, "get_transcript_session_ids", return_value={session_id}),
+        mock.patch.object(overwatch, "get_transcript_project_cwds", return_value={first}),
+        mock.patch.object(overwatch, "_acquire_lock") as acquire_lock,
+    ):
+        result = overwatch.run(session_id, "/unused/transcript.jsonl", True, second)
+
+    test("engine rejects transcript project mismatch", result is None, str(result))
+    test("engine project rejection happens before review lock", acquire_lock.call_count == 0, str(acquire_lock.call_args_list))
+
+
+def test_config_exchange_preserves_original_after_post_commit_race() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "hooks.json"
+        target.write_bytes(b"original\n")
+        os.chmod(target, 0o600)
+        staged = config_transaction.stage_bytes(target, b"managed\n", 0o600)
+        real_rename = config_transaction._atomic_rename
+        exchanges = 0
+
+        def raced_rename(source: Path, destination: Path, *, exchange: bool) -> None:
+            nonlocal exchanges
+            real_rename(source, destination, exchange=exchange)
+            if exchange and destination == target and exchanges == 0:
+                exchanges += 1
+                target.write_bytes(b"external\n")
+
+        with mock.patch.object(config_transaction, "_atomic_rename", side_effect=raced_rename):
+            try:
+                config_transaction.commit_staged(
+                    target,
+                    staged,
+                    expected_original=b"original\n",
+                    expected_mode=0o600,
+                )
+            except config_transaction.ConfigConflictError as exc:
+                error = str(exc)
+            else:
+                error = ""
+        recoveries = list(Path(tmp).glob(".hooks.json.overwatch-recovery.*.bak"))
+        recovery_bytes = recoveries[0].read_bytes() if len(recoveries) == 1 else b""
+        current_bytes = target.read_bytes()
+
+    test("post-commit config race is rejected", "original preserved" in error, error)
+    test("post-commit external edit remains current", current_bytes == b"external\n", repr(current_bytes))
+    test("post-commit original config is recoverable", recovery_bytes == b"original\n", repr(recovery_bytes))
+
+
+def test_config_rollback_preserves_external_edit_and_original() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "settings.json"
+        target.write_bytes(b"managed\n")
+        os.chmod(target, 0o600)
+        displaced = Path(tmp) / "displaced-original"
+        displaced.write_bytes(b"original\n")
+        os.chmod(displaced, 0o640)
+        real_rename = config_transaction._atomic_rename
+        exchanges = 0
+
+        def raced_rename(source: Path, destination: Path, *, exchange: bool) -> None:
+            nonlocal exchanges
+            real_rename(source, destination, exchange=exchange)
+            if exchange and destination == target and exchanges == 0:
+                exchanges += 1
+                target.write_bytes(b"external\n")
+
+        with mock.patch.object(config_transaction, "_atomic_rename", side_effect=raced_rename):
+            try:
+                config_transaction.rollback_commit(
+                    target,
+                    displaced,
+                    expected_current=b"managed\n",
+                    expected_current_mode=0o600,
+                )
+            except config_transaction.ConfigConflictError as exc:
+                error = str(exc)
+            else:
+                error = ""
+        recoveries = list(Path(tmp).glob(".settings.json.overwatch-recovery.*.bak"))
+        recovery_bytes = recoveries[0].read_bytes() if len(recoveries) == 1 else b""
+        current_bytes = target.read_bytes()
+        displaced_bytes = displaced.read_bytes()
+
+    test("post-rollback config race is rejected", "original preserved" in error, error)
+    test("post-rollback external edit remains current", current_bytes == b"external\n", repr(current_bytes))
+    test("post-rollback original config is recoverable", recovery_bytes == b"original\n", repr(recovery_bytes))
+    test("post-rollback managed bytes are not discarded", displaced_bytes == b"managed\n", repr(displaced_bytes))
+
+
 def test_session_triggers_are_isolated() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         first = write_trigger(tmp, "session-a", {"type": "manual_trigger", "cwd": "/a"})
@@ -87,7 +227,14 @@ def test_auto_review_trigger_streams_only_hash_verified_bytes() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         state = Path(tmp) / "state"
         review = Path(tmp) / "review.md"
-        review.write_bytes(b"exact review bytes\n")
+        project = str(Path(tmp) / "project")
+        Path(project).mkdir()
+        review.write_text(
+            f"<!-- Overwatch Review #1 | now | session: session-auto | project-sha256: {project_identity_sha256(project)} | project: {project} -->\n"
+            "<!-- META_END -->\n\nexact review bytes\n",
+            encoding="utf-8",
+        )
+        original_review = review.read_bytes()
         write_trigger(
             str(state),
             "session-auto",
@@ -95,9 +242,13 @@ def test_auto_review_trigger_streams_only_hash_verified_bytes() -> None:
                 "type": "auto_review",
                 "review_path": str(review),
                 "review_sha256": hashlib.sha256(review.read_bytes()).hexdigest(),
+                "project_root": project,
+                "pending_path": str(state / "pending.json"),
+                "marker_sha256": "1" * 64,
             },
         )
-        verified = read_auto_review_bytes(str(state), "session-auto")
+        verified = read_auto_review_bytes(str(state), "session-auto", project)
+        metadata = auto_review_metadata(str(state), "session-auto", project)
         cli = subprocess.run(
             [
                 sys.executable,
@@ -107,21 +258,31 @@ def test_auto_review_trigger_streams_only_hash_verified_bytes() -> None:
                 str(state),
                 "--session-id",
                 "session-auto",
+                "--project-root",
+                project,
             ],
             capture_output=True,
             check=False,
         )
         review.write_bytes(b"replaced review bytes\n")
         try:
-            read_auto_review_bytes(str(state), "session-auto")
+            read_auto_review_bytes(str(state), "session-auto", project)
         except ValueError as exc:
             mismatch = str(exc)
         else:
             mismatch = ""
+        try:
+            read_auto_review_bytes(str(state), "session-auto", str(Path(tmp) / "other"))
+        except ValueError as exc:
+            project_mismatch = str(exc)
+        else:
+            project_mismatch = ""
 
-    test("auto trigger reader preserves exact verified bytes", verified == b"exact review bytes\n")
+    test("auto trigger reader preserves exact verified bytes", verified == original_review)
     test("auto trigger CLI streams the same verified bytes", cli.returncode == 0 and cli.stdout == verified, cli.stderr.decode())
     test("auto trigger reader rejects replaced review", "hash mismatch" in mismatch, mismatch)
+    test("auto trigger metadata exposes exact acknowledgement inputs", metadata.get("pending_path") == str(state / "pending.json") and metadata.get("trigger_path") == trigger_path(str(state), "session-auto"), str(metadata))
+    test("auto trigger reader rejects another project", "project does not match" in project_mismatch, project_mismatch)
 
 
 def test_find_review_refuses_ambiguous_project_session() -> None:
@@ -137,7 +298,8 @@ def test_find_review_refuses_ambiguous_project_session() -> None:
             latest = reviews / sid / "latest.md"
             latest.parent.mkdir(parents=True)
             latest.write_text(
-                f"<!-- Overwatch Review #1 | now | session: {sid} | project: {project} -->\n",
+                f"<!-- Overwatch Review #1 | now | session: {sid} | project-sha256: {project_identity_sha256(project)} | project: {project} -->\n"
+                "<!-- META_END -->\n",
                 encoding="utf-8",
             )
         result = subprocess.run(
@@ -243,7 +405,7 @@ def test_atomic_state_and_trigger_writers_fsync_parent_directories() -> None:
                 trigger_state.write_trigger(
                     str(state),
                     "fsync-session",
-                    {"type": "manual_trigger"},
+                    {"type": "manual_trigger", "cwd": str(Path(tmp) / "project")},
                 )
             state_mode = state.stat().st_mode & 0o777
         finally:
@@ -427,12 +589,14 @@ def test_pending_review_delivery_intent_recovers_without_backend_replay() -> Non
         review = Path(str(prepared["review_path"]))
         success_state = {
             "session_id": "delivery-recovery",
+            "project_root": canonical_project_root("/tmp/project"),
             "last_reviewed_turn": 9,
             "review_count": 3,
             "last_review_status": "success",
         }
         intent_state = {
             "session_id": "delivery-recovery",
+            "project_root": canonical_project_root("/tmp/project"),
             "last_reviewed_turn": 4,
             "review_count": 3,
             "pending_review_delivery": {
@@ -440,6 +604,7 @@ def test_pending_review_delivery_intent_recovers_without_backend_replay() -> Non
                 "review_number": 3,
                 "session_id": "delivery-recovery",
                 "project_cwd": "/tmp/project",
+                "project_root": canonical_project_root("/tmp/project"),
                 "delivery_mode": "auto",
                 "success_state": success_state,
             },
@@ -507,12 +672,14 @@ def test_manual_result_crash_recovers_without_backend_replay() -> None:
         )
         success_state = {
             "session_id": "manual-recovery",
+            "project_root": canonical_project_root("/tmp/project"),
             "last_reviewed_turn": 12,
             "review_count": 4,
             "last_review_status": "success",
         }
         intent_state = {
             "session_id": "manual-recovery",
+            "project_root": canonical_project_root("/tmp/project"),
             "last_reviewed_turn": 7,
             "review_count": 4,
             "pending_review_delivery": {
@@ -520,6 +687,7 @@ def test_manual_result_crash_recovers_without_backend_replay() -> None:
                 "review_number": 4,
                 "session_id": "manual-recovery",
                 "project_cwd": "/tmp/project",
+                "project_root": canonical_project_root("/tmp/project"),
                 "delivery_mode": "manual",
                 "manual_result_path": str(result_file),
                 "success_state": success_state,
@@ -568,6 +736,11 @@ def test_manual_result_crash_recovers_without_backend_replay() -> None:
 if __name__ == "__main__":
     test_session_registry_preserves_concurrent_same_project_sessions()
     test_session_registry_does_not_bind_descendant_projects()
+    test_session_registry_refuses_same_session_in_another_project()
+    test_session_registry_rejects_empty_project_identity()
+    test_engine_rejects_transcript_from_another_project_before_lock()
+    test_config_exchange_preserves_original_after_post_commit_race()
+    test_config_rollback_preserves_external_edit_and_original()
     test_session_triggers_are_isolated()
     test_auto_review_trigger_streams_only_hash_verified_bytes()
     test_find_review_refuses_ambiguous_project_session()

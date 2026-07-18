@@ -37,6 +37,11 @@ if [ "$SESSION_VALID" != "true" ]; then
     SESSION_ID=""
 fi
 CWD=$(echo "$INPUT" | python3 -c "import os,sys,json; d=json.load(sys.stdin); print(d.get('cwd') or os.getcwd())" 2>/dev/null || pwd)
+PROJECT_ROOT=$(OW_DIR="$OVERWATCH_DIR" OW_CWD="$CWD" python3 -c "
+import os, sys; sys.path.insert(0, os.environ['OW_DIR'])
+from runtime_fs import canonical_project_root
+print(canonical_project_root(os.environ.get('OW_CWD', '')))
+" 2>/dev/null || echo "")
 USER_PROMPT=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('user_prompt', d.get('prompt', '')))" 2>/dev/null || echo "")
 TRANSCRIPT=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('transcript_path',''))" 2>/dev/null || echo "")
 PROJECT_ALLOWED=$(OW_DIR="$OVERWATCH_DIR" OW_CWD="$CWD" python3 -c "
@@ -55,7 +60,7 @@ anchor_helper_path() {
 }
 
 render_anchor_capture_gate() {
-    local helper anchor_active="false" anchor_context="" args
+    local helper anchor_active="false" anchor_context="" args context_error_file error_file output error_text
     case "${ANCHOR_DISABLE:-}" in
         1|true|TRUE|yes|YES) return 0 ;;
     esac
@@ -66,10 +71,24 @@ render_anchor_capture_gate() {
     if [ -n "$helper" ]; then
         args=(python3 "$helper" render-context --cwd "$CWD" --thread-id "$SESSION_ID")
         [ -z "${ANCHOR_GLOBAL_STATE_ROOT:-}" ] || args+=(--global-state-root "$ANCHOR_GLOBAL_STATE_ROOT")
-        anchor_context=$("${args[@]}" 2>/dev/null || true)
-        [[ "$anchor_context" == *"[Anchor]"* ]] && anchor_active="true"
+        context_error_file=$(mktemp)
+        if anchor_context=$("${args[@]}" 2>"$context_error_file"); then
+            rm -f "$context_error_file"
+            [[ "$anchor_context" == *"[Anchor]"* ]] && anchor_active="true"
+        else
+            error_text=$(tail -20 "$context_error_file" 2>/dev/null || true)
+            rm -f "$context_error_file"
+            if [[ "$error_text" != *"Anchor tracker not found"* ]]; then
+                { printf '[Overwatch Claude Prompt] Anchor context read failed: %s\n' "$error_text" >> "$LOG_FILE"; } 2>/dev/null || true
+                printf '%s\n' \
+                    "[Anchor Warning]" \
+                    "Anchor state could not be read. Do not reconstruct the agenda from memory or file search. Run Anchor validation and doctor diagnostics before continuing."
+                return 0
+            fi
+        fi
     fi
-    OW_DIR="$OVERWATCH_DIR" \
+    error_file=$(mktemp)
+    if output=$(OW_DIR="$OVERWATCH_DIR" \
     OW_STATE="$STATE_DIR" \
     OW_SID="$SESSION_ID" \
     OW_TRANSCRIPT="$TRANSCRIPT" \
@@ -78,14 +97,14 @@ render_anchor_capture_gate() {
     OW_ACTIVE="$anchor_active" \
     OW_HELPER="$helper" \
     OW_GLOBAL_STATE="${ANCHOR_GLOBAL_STATE_ROOT:-}" \
-    python3 - <<'PY' 2>/dev/null || true
+    python3 - <<'PY' 2>"$error_file"
 import os
 import sys
 
 sys.path.insert(0, os.environ["OW_DIR"])
-from anchor_capture import evaluate_capture_gate
+from anchor_capture import evaluate_capture_gate, evaluate_transition_gate
 
-print(evaluate_capture_gate(
+capture = evaluate_capture_gate(
     state_dir=os.environ["OW_STATE"],
     session_id=os.environ["OW_SID"],
     adapter_name="claude_code",
@@ -95,8 +114,30 @@ print(evaluate_capture_gate(
     anchor_active=os.environ.get("OW_ACTIVE") == "true",
     helper_path=os.environ.get("OW_HELPER", ""),
     global_state_root=os.environ.get("OW_GLOBAL_STATE", ""),
-))
+)
+transition = evaluate_transition_gate(
+    state_dir=os.environ["OW_STATE"],
+    session_id=os.environ["OW_SID"],
+    adapter_name="claude_code",
+    transcript_path=os.environ.get("OW_TRANSCRIPT", ""),
+    cwd=os.environ["OW_CWD"],
+    anchor_active=os.environ.get("OW_ACTIVE") == "true",
+    helper_path=os.environ.get("OW_HELPER", ""),
+    global_state_root=os.environ.get("OW_GLOBAL_STATE", ""),
+)
+print("\n\n".join(part for part in (capture, transition) if part))
 PY
+    ); then
+        rm -f "$error_file"
+        printf '%s\n' "$output"
+        return 0
+    fi
+    error_text=$(tail -20 "$error_file" 2>/dev/null || true)
+    rm -f "$error_file"
+    { printf '[Overwatch Claude Prompt] Anchor capture evaluator failed: %s\n' "$error_text" >> "$LOG_FILE"; } 2>/dev/null || true
+    printf '%s\n' \
+        "[Anchor Capture Warning]" \
+        "The Anchor capture evaluator failed. Do not infer that no agenda or prose-only transition exists; run Overwatch/Anchor diagnostics before substantive work."
 }
 
 sanitize_capture_context() {
@@ -132,11 +173,29 @@ PY
 }
 
 # --- Phase 1: Check for pending auto-review (per-session) ---
-CAPTURE_CONTEXT=$(render_anchor_capture_gate | sanitize_capture_context)
+SCOPE_OK="true"
+if [ "$PROJECT_ALLOWED" = "true" ] && [ -n "$SESSION_ID" ] && [ -n "$PROJECT_ROOT" ]; then
+    if ! OW_DIR="$OVERWATCH_DIR" OW_STATE_DIR="$STATE_DIR" OW_CWD="$PROJECT_ROOT" OW_SID="$SESSION_ID" python3 -c "
+import os, sys
+sys.path.insert(0, os.environ['OW_DIR'])
+from session_registry import record_session
+record_session(os.environ['OW_STATE_DIR'], os.environ['OW_CWD'], os.environ['OW_SID'])
+" 2>>"$LOG_FILE"; then
+        SCOPE_OK="false"
+    fi
+fi
+if [ "$SCOPE_OK" = "true" ]; then
+    CAPTURE_CONTEXT=$(render_anchor_capture_gate | sanitize_capture_context)
+else
+    CAPTURE_CONTEXT=$(printf '%s\n' \
+        "[Overwatch Project Scope Block]" \
+        "This session is already bound to another project. Do not deliver reviews, capture agendas, or mutate Anchor state here. Start a new task for this project." \
+        | sanitize_capture_context)
+fi
 PENDING_FILE="${STATE_DIR}/auto_review_pending_${SESSION_ID}.json"
 echo "[Overwatch Prompt Hook $(date +%H:%M:%S)] Hook fired (session=$SESSION_ID, pending_exists=$([ -f "$PENDING_FILE" ] && echo 'yes' || echo 'no'))" >> "$LOG_FILE" 2>&1
-if [ "$PROJECT_ALLOWED" = "true" ] && [ -n "$SESSION_ID" ] && [ -f "$PENDING_FILE" ]; then
-    PENDING_ACTION=$(OW_DIR="$OVERWATCH_DIR" OW_PENDING="$PENDING_FILE" OW_SID="$SESSION_ID" python3 - <<'PY' 2>/dev/null || echo "invalid_marker"
+if [ "$SCOPE_OK" = "true" ] && [ "$PROJECT_ALLOWED" = "true" ] && [ -n "$SESSION_ID" ] && [ -f "$PENDING_FILE" ]; then
+    PENDING_ACTION=$(OW_DIR="$OVERWATCH_DIR" OW_PENDING="$PENDING_FILE" OW_SID="$SESSION_ID" OW_ROOT="$PROJECT_ROOT" python3 - <<'PY' 2>/dev/null || echo "invalid_marker"
 import os
 import sys
 
@@ -146,6 +205,7 @@ from pending_review import cleanup_expired_pending
 status = cleanup_expired_pending(
     os.environ["OW_PENDING"],
     expected_session_id=os.environ["OW_SID"],
+    expected_project_root=os.environ["OW_ROOT"],
 )
 print(
     "deliver:" + str(status.get("marker_sha256") or "")
@@ -166,7 +226,7 @@ PY
     echo "[Overwatch Prompt Hook $(date +%H:%M:%S)] Auto-review pending found, injecting via additionalContext" >> "$LOG_FILE" 2>&1
     # Primary: inject review content via additionalContext (reaches AI context)
     # Fallback: write trigger file for environments without additionalContext support
-    if OUTPUT=$(OW_STATE="$STATE_DIR" OW_PENDING="$PENDING_FILE" OW_DIR="$OVERWATCH_DIR" OW_SID="$SESSION_ID" OW_CAPTURE="$CAPTURE_CONTEXT" python3 - <<'PY' 2>/dev/null
+    if OUTPUT=$(OW_STATE="$STATE_DIR" OW_PENDING="$PENDING_FILE" OW_DIR="$OVERWATCH_DIR" OW_SID="$SESSION_ID" OW_ROOT="$PROJECT_ROOT" OW_CAPTURE="$CAPTURE_CONTEXT" python3 - <<'PY' 2>/dev/null
 import json, os, shlex, sys
 state_dir = os.environ['OW_STATE']
 sys.path.insert(0, os.environ['OW_DIR'])
@@ -176,6 +236,7 @@ from trigger_state import write_trigger
 status, content = read_deliverable_review(
     os.environ['OW_PENDING'],
     expected_session_id=os.environ['OW_SID'],
+    expected_project_root=os.environ['OW_ROOT'],
 )
 if not status.get('deliverable'):
     raise SystemExit(1)
@@ -189,17 +250,21 @@ trigger_path = write_trigger(
         'type': 'auto_review',
         'review_path': review_path,
         'review_sha256': status['review_sha256'],
+        'project_root': os.environ['OW_ROOT'],
+        'pending_path': os.environ['OW_PENDING'],
+        'marker_sha256': status['marker_sha256'],
     },
 )
 
 acknowledge_command = (
     'python3 {script} acknowledge --state-dir {state} --pending-path {pending} '
-    '--session-id {sid} --expected-marker-sha256 {marker}'
+    '--session-id {sid} --project-root {root} --expected-marker-sha256 {marker}'
 ).format(
     script=shlex.quote(os.path.join(os.environ['OW_DIR'], 'pending_review.py')),
     state=shlex.quote(state_dir),
     pending=shlex.quote(os.environ['OW_PENDING']),
     sid=shlex.quote(session_id),
+    root=shlex.quote(os.environ['OW_ROOT']),
     marker=shlex.quote(str(status['marker_sha256'])),
 )
 cleanup_command = acknowledge_command + ' && rm -f ' + shlex.quote(trigger_path)
@@ -260,6 +325,9 @@ fi
 if [ "$PROJECT_ALLOWED" != "true" ]; then
     exit 0
 fi
+if [ "$SCOPE_OK" != "true" ]; then
+    exit 0
+fi
 if [ -z "$SESSION_ID" ]; then
     exit 0
 fi
@@ -268,7 +336,7 @@ echo "[Overwatch Prompt Hook $(date +%H:%M:%S)] Manual trigger matched (session=
 
 # Primary: inject trigger info via additionalContext (reaches AI context)
 # Fallback: write trigger file for environments without additionalContext support
-OUTPUT=$(OW_STATE="$STATE_DIR" OW_SID="$SESSION_ID" OW_TRANSCRIPT="$TRANSCRIPT" OW_CWD="$CWD" OW_DIR="$OVERWATCH_DIR" OW_CAPTURE="$CAPTURE_CONTEXT" python3 -c "
+OUTPUT=$(OW_STATE="$STATE_DIR" OW_SID="$SESSION_ID" OW_TRANSCRIPT="$TRANSCRIPT" OW_CWD="$PROJECT_ROOT" OW_DIR="$OVERWATCH_DIR" OW_CAPTURE="$CAPTURE_CONTEXT" python3 -c "
 import json, os, shlex, sys, uuid
 sid = os.environ['OW_SID']
 transcript = os.environ['OW_TRANSCRIPT']
@@ -285,6 +353,7 @@ trigger = {
     'session_id': sid,
     'transcript_path': transcript,
     'cwd': cwd,
+    'project_root': cwd,
     'overwatch_dir': ow_dir,
     'result_file': result_file,
 }

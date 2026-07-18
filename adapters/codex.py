@@ -3,6 +3,7 @@
 Parses Codex Desktop JSONL session transcripts into Turn objects.
 """
 import json
+import os
 
 from config import SKIP_USER_PATTERNS, MAX_TURN_CONTENT_CHARS
 from adapters import Turn
@@ -109,6 +110,26 @@ def transcript_session_ids(transcript_path: str) -> set[str]:
                 if session_id:
                     session_ids.add(session_id)
     return session_ids
+
+
+def transcript_project_cwds(transcript_path: str) -> set[str]:
+    cwds: set[str] = set()
+    with open(transcript_path, "r", encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict) or record.get("type") not in {
+                "session_meta",
+                "turn_context",
+            }:
+                continue
+            payload = record.get("payload") or {}
+            cwd = str(payload.get("cwd") or "").strip() if isinstance(payload, dict) else ""
+            if cwd:
+                cwds.add(os.path.realpath(cwd))
+    return cwds
 
 
 def _summarize_command_end(payload: dict) -> tuple[str, str]:

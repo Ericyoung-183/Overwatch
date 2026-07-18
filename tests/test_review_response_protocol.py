@@ -11,6 +11,7 @@ import tempfile
 import importlib.util
 from contextlib import contextmanager
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,7 +23,8 @@ from response_protocol import (  # noqa: E402
     build_manual_trigger_context,
 )
 from prompts import OVERWATCH_SYSTEM_PROMPT, build_review_prompt  # noqa: E402
-from overwatch import write_manual_result  # noqa: E402
+import overwatch  # noqa: E402
+from runtime_fs import canonical_project_root, project_identity_sha256  # noqa: E402
 
 
 REQUIRED_PROTOCOL_PHRASES = [
@@ -226,12 +228,30 @@ def test_manual_result_lookup_rejects_stale_or_wrong_session_review() -> None:
         review = root / "review.md"
         result_file = root / "result.json"
         session_id = "session-current"
+        project_root = canonical_project_root("/tmp/p")
         review_text = (
-            f"<!-- Overwatch Review #1 | 2026-07-18 10:00:00 | session: {session_id} | project: /tmp/p -->\n"
+            f"<!-- Overwatch Review #1 | 2026-07-18 10:00:00 | session: {session_id} | "
+            f"project-sha256: {project_identity_sha256(project_root)} | project: {project_root} -->\n"
             "<!-- META_END -->\n\nreview body\n"
         )
         review.write_text(review_text, encoding="utf-8")
-        write_manual_result(str(result_file), session_id, str(review))
+        review_hash = __import__("hashlib").sha256(review.read_bytes()).hexdigest()
+        intent_state = {
+            "project_root": project_root,
+            "pending_review_delivery": {
+                "delivery_mode": "manual",
+                "manual_result_path": str(result_file),
+                "review_path": str(review),
+                "review_sha256": review_hash,
+                "project_root": project_root,
+                "success_state": {"project_root": project_root},
+            },
+        }
+        with (
+            mock.patch.object(overwatch, "load_state", return_value=intent_state),
+            mock.patch.object(overwatch, "save_state"),
+        ):
+            overwatch.write_manual_result(str(result_file), session_id, str(review))
         success = subprocess.run(
             [
                 "bash",
@@ -287,6 +307,9 @@ def test_install_snippet_uses_protocol_placeholder() -> None:
     test("install snippet has protocol placeholder", "{{REVIEW_RESPONSE_PROTOCOL}}" in text)
     test("install snippet uses exact manual wrapper", "hooks/run_manual_review.sh" in text)
     test("install snippet rejects stale latest fallback", "do not fall back to an older `latest.md`" in text)
+    test("install snippet binds fallback review to project root", "read-auto-review" in text and "--project-root \"$PROJECT_ROOT\"" in text, text)
+    test("install snippet obtains exact fallback acknowledgement metadata", "auto-review-metadata" in text and "marker_sha256" in text, text)
+    test("install snippet acknowledges only after verbatim presentation", "After verbatim presentation" in text and "pending_review.py" in text, text)
 
 
 def test_manual_wrapper_does_not_return_stale_review_after_identity_failure() -> None:
@@ -351,7 +374,7 @@ def test_find_review_uses_project_boundaries_and_metadata() -> None:
         latest = reviews / sid / "latest.md"
         latest.parent.mkdir()
         latest.write_text(
-            f"<!-- Overwatch Review #1 | now | session: {sid} | project: {allowed} -->\n",
+            f"<!-- Overwatch Review #1 | now | session: {sid} | project-sha256: {project_identity_sha256(allowed)} | project: {allowed} -->\n",
             encoding="utf-8",
         )
         (state / "session_map.json").write_text(
@@ -360,7 +383,7 @@ def test_find_review_uses_project_boundaries_and_metadata() -> None:
         )
         colliding_fallback = reviews / f"_current_{sibling.name}.md"
         colliding_fallback.write_text(
-            f"<!-- Overwatch Review #1 | now | session: other | project: {allowed} -->\n",
+            f"<!-- Overwatch Review #1 | now | session: other | project-sha256: {project_identity_sha256(allowed)} | project: {allowed} -->\n",
             encoding="utf-8",
         )
         env = {

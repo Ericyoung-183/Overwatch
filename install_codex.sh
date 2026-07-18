@@ -18,7 +18,7 @@ echo "  Overwatch Installer for Codex"
 echo "========================================="
 echo ""
 
-for f in overwatch.py config.py api_client.py codex_exec_client.py context_manager.py pending_review.py anchor_capture.py runtime_fs.py prompts.py anchor_drift.py trigger_policy.py response_protocol.py session_registry.py trigger_state.py adapters/__init__.py adapters/codex.py hooks/codex_stop.sh hooks/codex_prompt.sh hooks/find_review.sh hooks/find_session.sh hooks/run_manual_review.sh; do
+for f in overwatch.py config.py api_client.py codex_exec_client.py context_manager.py pending_review.py anchor_capture.py runtime_fs.py config_transaction.py prompts.py anchor_drift.py trigger_policy.py response_protocol.py session_registry.py trigger_state.py adapters/__init__.py adapters/codex.py hooks/codex_stop.sh hooks/codex_prompt.sh hooks/find_review.sh hooks/find_session.sh hooks/run_manual_review.sh; do
     if [ ! -f "$OVERWATCH_DIR/$f" ]; then
         echo -e "${RED}Error: Missing $f in $OVERWATCH_DIR${NC}"
         exit 1
@@ -54,11 +54,9 @@ chmod 700 "$OVERWATCH_DIR/state" "$OVERWATCH_DIR/reviews"
 echo -e "Runtime directories: ${GREEN}OK${NC}"
 
 mkdir -p "$(dirname "$HOOKS_FILE")"
-if [ ! -f "$HOOKS_FILE" ]; then
-    printf '{\n  "hooks": {}\n}\n' >"$HOOKS_FILE"
-    echo -e "Created Codex hooks file: ${GREEN}$HOOKS_FILE${NC}"
-else
-    echo -e "Found Codex hooks file: ${GREEN}$HOOKS_FILE${NC}"
+if [ -L "$HOOKS_FILE" ]; then
+    echo -e "${RED}Error: Refusing symbolic-link Codex hooks file: $HOOKS_FILE${NC}"
+    exit 1
 fi
 
 echo -e "Hook commands: ${GREEN}OK${NC}"
@@ -69,19 +67,23 @@ import os
 import shutil
 import shlex
 import sys
-import tempfile
 from pathlib import Path
 
 hooks_file = Path(sys.argv[1])
 overwatch_dir = Path(sys.argv[2])
+sys.path.insert(0, str(overwatch_dir))
+from config_transaction import commit_staged, reject_symlink, rollback_commit, stage_bytes
 
+reject_symlink(hooks_file)
+existed = hooks_file.is_file()
 try:
-    original = hooks_file.read_bytes()
-    settings = json.loads(original)
+    original = hooks_file.read_bytes() if existed else None
+    settings = json.loads(original) if original is not None else {"hooks": {}}
 except json.JSONDecodeError as exc:
     raise SystemExit(f"Invalid JSON in {hooks_file}: {exc}")
 
 backup = hooks_file.with_suffix(hooks_file.suffix + ".backup")
+reject_symlink(backup)
 
 hooks = settings.setdefault("hooks", {})
 
@@ -161,26 +163,48 @@ messages = [
     add_canonical_hook("UserPromptSubmit", prompt_command, 120, "hooks/codex_prompt.sh"),
 ]
 
-fd, tmp = tempfile.mkstemp(dir=str(hooks_file.parent), suffix=".tmp")
-with os.fdopen(fd, "w", encoding="utf-8") as f:
-    json.dump(settings, f, indent=2, ensure_ascii=False)
-    f.write("\n")
-    f.flush()
-    os.fsync(f.fileno())
-if hooks_file.read_bytes() != original:
-    os.unlink(tmp)
-    raise SystemExit(f"Refusing to replace concurrently modified hook config: {hooks_file}")
-shutil.copy2(hooks_file, backup)
-os.replace(tmp, hooks_file)
-parent_fd = os.open(hooks_file.parent, os.O_RDONLY | os.O_DIRECTORY)
+updated = (json.dumps(settings, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+mode = (hooks_file.stat().st_mode & 0o777) if existed else 0o600
+staged = stage_bytes(hooks_file, updated, mode)
+displaced = None
+committed = False
+preserve_displaced = False
 try:
-    os.fsync(parent_fd)
+    displaced = commit_staged(
+        hooks_file,
+        staged,
+        expected_original=original,
+        expected_mode=mode if existed else None,
+    )
+    committed = True
+    if displaced is not None:
+        shutil.copy2(displaced, backup)
+    else:
+        backup.write_bytes(b'{\n  "hooks": {}\n}\n')
+        os.chmod(backup, mode)
+except BaseException:
+    if committed:
+        try:
+            rollback_commit(
+                hooks_file,
+                displaced,
+                expected_current=updated,
+                expected_current_mode=mode,
+            )
+            displaced = None
+        except BaseException:
+            preserve_displaced = True
+            raise
+    raise
 finally:
-    os.close(parent_fd)
+    if displaced is not None and not preserve_displaced:
+        displaced.unlink(missing_ok=True)
+    staged.unlink(missing_ok=True)
 
 for message in messages:
     print(message)
 print(f"Backup saved to: {backup}")
+print(f"Codex hooks file: {'updated' if existed else 'created'}")
 PY
 
 echo ""
